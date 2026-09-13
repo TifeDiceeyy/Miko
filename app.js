@@ -17,6 +17,7 @@ const elements = {
   appVersion: $("#appVersion"),
   platformInfo: $("#platformInfo"),
   topStatus: $("#topStatus"),
+  liveTimer: $("#liveTimer"),
   systemStatus: $("#systemStatus"),
   permissionStatus: $("#permissionStatus"),
   connectionSummary: $("#connectionSummary"),
@@ -234,10 +235,13 @@ function render() {
 
   // Log meaningful transitions once, not on every stats-poll re-render.
   if (snap.state !== state.lastLoggedState) {
-    if (snap.state === "live") addActivity("Live session started");
-    else if (snap.state === "idle" && state.lastLoggedState !== "idle") addActivity("Session stopped");
-    else if (snap.state === "error") addActivity(`Error: ${snap.error || "connection failed"}`);
-    else if (snap.state === "reconnecting") addActivity("Reconnecting…");
+    if (snap.state === "live") { addActivity("Live session started"); startLiveTimer(); }
+    else {
+      if (snap.state === "idle" && state.lastLoggedState !== "idle") addActivity("Session stopped");
+      else if (snap.state === "error") addActivity(`Error: ${snap.error || "connection failed"}`);
+      else if (snap.state === "reconnecting") addActivity("Reconnecting…");
+      stopLiveTimer();
+    }
     state.lastLoggedState = snap.state;
   }
 
@@ -495,6 +499,45 @@ function stopObsFrameLoop() {
     window.clearInterval(obsFrameTimer);
     obsFrameTimer = null;
   }
+}
+
+// ---------------------------------------------------------------------
+// Live session timer — an in-app UI element only. OBS's feed is built by
+// startObsFrameLoop() drawing just the <video id="resultVideo"> element's
+// pixels onto a canvas (see below); this timer lives in a separate DOM
+// element that loop never touches, so it can never end up in the OBS
+// output no matter how it's styled or positioned.
+// ---------------------------------------------------------------------
+
+let liveTimerInterval = null;
+let liveStartedAt = null;
+
+function formatLiveDuration(ms) {
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return hours > 0 ? `${pad(hours)}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
+}
+
+function startLiveTimer() {
+  if (liveTimerInterval) return;
+  liveStartedAt = Date.now();
+  elements.liveTimer.hidden = false;
+  elements.liveTimer.textContent = "00:00";
+  liveTimerInterval = window.setInterval(() => {
+    elements.liveTimer.textContent = formatLiveDuration(Date.now() - liveStartedAt);
+  }, 1000);
+}
+
+function stopLiveTimer() {
+  if (liveTimerInterval) {
+    window.clearInterval(liveTimerInterval);
+    liveTimerInterval = null;
+  }
+  liveStartedAt = null;
+  elements.liveTimer.hidden = true;
 }
 
 function clearTransientSessionMedia() {
