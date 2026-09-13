@@ -59,6 +59,51 @@ NSIS target needs it for a Mac host to cross-build). Either install Wine
 actual Windows machine / CI runner — don't assume `--win` works out of the
 box on a Mac.
 
+### Building on Windows itself, after cloning
+
+This is the path with no Wine and no cross-build quirks — build natively
+on the Windows machine that will run the app.
+
+1. **Install prerequisites** (once):
+   - [Node.js LTS](https://nodejs.org) (v20 or newer) — installs `npm`
+     alongside it.
+   - [Git for Windows](https://git-scm.com/download/win).
+2. **Clone and enter the repo** (PowerShell or Command Prompt):
+   ```
+   git clone https://github.com/TifeDiceeyy/Miko.git
+   cd Miko
+   ```
+3. **Install dependencies:**
+   ```
+   npm install
+   ```
+   This also downloads Electron's prebuilt Windows binary automatically —
+   no native compiler toolchain needed for this project's own
+   dependencies. If `npm install` ever fails on a native module with a
+   `node-gyp`/`MSBuild` error (not expected here, but a general Windows/npm
+   gotcha), install "Desktop development with C++" via the [Visual Studio
+   Build Tools installer](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+   and re-run `npm install`.
+4. **Build the installer:**
+   ```
+   npx electron-builder --win nsis --x64
+   ```
+   (`npm run dist` also works and defaults to the host platform, which is
+   Windows here — either command is fine.)
+5. **Find the output:** `release\Miko-<version>-windows-x64.exe`. This is
+   an unsigned installer (no code-signing certificate is configured), so
+   Windows SmartScreen will show an "unknown publisher" warning the first
+   time it's run — click "More info" → "Run anyway". This is expected and
+   not a build error.
+6. **To just run the app without packaging an installer** (for testing on
+   the Windows machine before building a release):
+   ```
+   npm run dev
+   ```
+   You'll still need a fal.ai API key entered in Settings → Advanced (or
+   set the `FAL_KEY` environment variable) before Start Live will connect
+   — see "Install & run" above.
+
 ## Architecture (see README.md for the diagram)
 
 - `main.js` — Electron main process: fal.ai key storage (`safeStorage`),

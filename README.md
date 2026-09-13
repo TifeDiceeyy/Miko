@@ -58,3 +58,9 @@ Release builds:
 npx electron-builder --mac --universal
 npx electron-builder --win nsis --x64
 ```
+
+**Building on Windows after cloning:** see "Building on Windows itself,
+after cloning" in `AGENTS.md` for the full step-by-step (Node.js/Git
+prerequisites, `npm install`, `npx electron-builder --win nsis --x64`,
+where the `.exe` lands, and the expected SmartScreen warning on an
+unsigned build).
