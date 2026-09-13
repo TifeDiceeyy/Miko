@@ -167,7 +167,35 @@ fal.ai's public docs pages.
    `lib/lucy-config.ts`) is the best available proxy from real-world
    testing, not an official guarantee. `"Concurrent session limit
    reached."` is a normal, retryable condition fal can emit even from a
-   single well-behaved client — it is not proof of a client bug.
+   single well-behaved client — it is not automatically proof of a client
+   bug. **Correction, found later the same day**: a real client bug (see
+   #7 below, the `connectionKey` issue) was self-inflicting at least some
+   of these — a leaked, never-torn-down phantom connection from an earlier
+   attempt counts against your own account's concurrency limit. That bug
+   is fixed; if "Concurrent session limit reached" still shows up
+   frequently after this fix, it's genuinely fal-side, not this app.
+
+6. **Never pass a fixed/stable `connectionKey` to `fal.realtime.connect()`
+   in a plain (non-React) app.** The SDK caches its entire internal
+   signaling state machine in a module-level `Map` keyed by
+   `connectionKey`, with **no cleanup or expiry anywhere in the SDK**
+   (confirmed by reading `node_modules/@fal-ai/client/src/realtime.js` —
+   no `connectionCache.delete()` call exists). A fixed key means every
+   `connect()` call — including every automatic reconnect — reuses the
+   same cached machine and its internal token-refresh timers for the
+   whole process lifetime. This project used to pass a stable key
+   (`STABLE_CONNECTION_KEY = "lucy-realtime-singleton"`) to dedupe
+   connections across React re-renders — a concern that never applied
+   here (no React) and was already redundant with this class's own
+   `connecting`/`attemptGeneration` single-flight guard. The stable key
+   was removed; `connectionKey` is now omitted entirely so the SDK
+   defaults to a fresh `crypto.randomUUID()` per call. **This was a real,
+   confirmed cause of a billed session continuing to run server-side with
+   no visible connection in the app's own UI** — caught via the user's
+   fal.ai dashboard activity log showing an 80+ second request with no
+   corresponding "Live" state ever shown on screen. If you ever see that
+   symptom again (dashboard shows billed time the UI never reflected),
+   check for exactly this pattern before assuming it's fal-side.
 
 6. **Every error path should resolve to a precise, specific message** —
    this app's explicit design goal (`describeError()` in

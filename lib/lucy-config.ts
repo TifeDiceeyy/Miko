@@ -44,12 +44,21 @@ export const MAX_RECONNECT_ATTEMPTS = RECONNECT_BACKOFF_MS.length;
 export const CONCURRENCY_RETRY_BACKOFF_MS = [30000, 30000, 45000, 60000, 90000] as const;
 export const MAX_CONCURRENCY_RETRY_ATTEMPTS = CONCURRENCY_RETRY_BACKOFF_MS.length;
 
-/**
- * One constant key for the whole app. `fal.realtime.connect` uses this to
- * dedupe/reuse the same logical connection across re-renders instead of
- * spawning a parallel one — see Fix #2 in the master prompt.
- */
-export const STABLE_CONNECTION_KEY = "lucy-realtime-singleton";
+// A fixed `connectionKey` used to live here so `fal.realtime.connect` would
+// dedupe/reuse one logical connection across React re-renders. This app has
+// no React and already single-flights connect attempts itself (see
+// `connecting`/`attemptGeneration` in LucyRealtimeSession), so it was
+// removed: the fal SDK caches its entire internal signaling state machine
+// in a module-level Map keyed by `connectionKey`, with no cleanup/expiry
+// (confirmed by reading node_modules/@fal-ai/client/src/realtime.js — no
+// `connectionCache.delete()` anywhere in that file). A fixed key meant every
+// connect attempt — including every automatic reconnect — reused the same
+// cached state machine and its internal token-refresh timers for the whole
+// app process lifetime, which is a real, confirmed cause of a stale session
+// continuing to run (and bill) server-side after our own UI believed the
+// connection was closed. Omitting `connectionKey` now lets the SDK use its
+// own default, `crypto.randomUUID()` per call — a fully isolated, fresh
+// state machine for every single attempt, with nothing left to leak.
 
 /** How often to poll RTCPeerConnection.getStats() for adaptive resolution. */
 export const STATS_POLL_INTERVAL_MS = 2000;

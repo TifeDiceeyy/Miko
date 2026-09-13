@@ -6,7 +6,6 @@ import {
   NETWORK_THRESHOLDS,
   RECONNECT_BACKOFF_MS,
   RESOLUTION_STEPS,
-  STABLE_CONNECTION_KEY,
   STATS_POLL_INTERVAL_MS,
   TOKEN_DURATION_SECONDS,
   type Resolution,
@@ -443,7 +442,13 @@ export class LucyRealtimeSession {
     // iceServers (see the SignalMessage docstring for why the order matters).
     try {
       this.connection = fal.realtime.connect<SignalMessage, SignalMessage>(this.endpoint, {
-        connectionKey: STABLE_CONNECTION_KEY,
+        // No connectionKey override — let the SDK default to a fresh
+        // crypto.randomUUID() per call. See the removed STABLE_CONNECTION_KEY
+        // comment in lucy-config.ts for why a fixed key here is unsafe: it
+        // made every attempt reuse one never-cleaned-up cached state machine
+        // for the whole app lifetime, letting a stale attempt's internal
+        // token-refresh cycle keep a billable session alive after our own
+        // UI believed it was closed.
         tokenExpirationSeconds: TOKEN_DURATION_SECONDS,
         // Delegates to the main process over IPC — it holds the user's fal.ai
         // key (see electron/key-store.ts) and mints a short-lived token. The
