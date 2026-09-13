@@ -89,6 +89,7 @@ const state = {
   activityCount: 1,
   referenceImageUrl: undefined,
   balance: null,
+  balanceBlocksStart: false,
   balanceVisible: false,
   lastLoggedState: "idle",
   lastSessionActive: false
@@ -224,7 +225,13 @@ function render() {
 
   const isLive = snap.state === "live";
   const isBusy = snap.state === "connecting" || snap.state === "reconnecting";
-  elements.startBtn.disabled = isLive || isBusy;
+  // Balance at/below the floor blocks a *new* session, but never interrupts
+  // one already live/connecting — this only affects Start's own disabled
+  // state, not isBusy/isLive elsewhere.
+  elements.startBtn.disabled = isLive || isBusy || state.balanceBlocksStart;
+  elements.startBtn.title = state.balanceBlocksStart && !isLive && !isBusy
+    ? `Balance too low to start a session (min $${MIN_BALANCE_USD.toFixed(2)} required) — top up at fal.ai/dashboard/billing`
+    : "";
   elements.stopBtn.disabled = snap.state === "idle";
   elements.modeSelect.disabled = isLive || isBusy;
   elements.resolutionSelect.disabled = isLive || isBusy;
@@ -235,12 +242,13 @@ function render() {
 
   // Log meaningful transitions once, not on every stats-poll re-render.
   if (snap.state !== state.lastLoggedState) {
-    if (snap.state === "live") { addActivity("Live session started"); startLiveTimer(); }
+    if (snap.state === "live") { addActivity("Live session started"); startLiveTimer(); startLiveBalanceGuard(); }
     else {
       if (snap.state === "idle" && state.lastLoggedState !== "idle") addActivity("Session stopped");
       else if (snap.state === "error") addActivity(`Error: ${snap.error || "connection failed"}`);
       else if (snap.state === "reconnecting") addActivity("Reconnecting…");
       stopLiveTimer();
+      stopLiveBalanceGuard();
     }
     state.lastLoggedState = snap.state;
   }
@@ -404,7 +412,15 @@ async function refreshKeyStatus() {
       : "No key configured yet.";
 }
 
-const LOW_BALANCE_THRESHOLD = 1.0;
+// $1.00 floor, used two ways: below it the balance display switches to a
+// "running low" warning, and at or below it Start Live is actively blocked
+// client-side. Lucy 2.5 realtime bills at $0.02/sec (confirmed against
+// fal's own pricing page, not assumed) — $1.00 is roughly 50 seconds of
+// remaining runway, chosen so a session can't itself be the thing that
+// pushes the account into overdraft. This is a fixed floor regardless of
+// how much or how little the account is topped up by.
+const MIN_BALANCE_USD = 1.0;
+const FAL_LUCY_REALTIME_RATE_PER_SECOND = 0.02;
 let lastBalanceWarningShown = false;
 
 function renderBalance() {
@@ -415,11 +431,11 @@ function renderBalance() {
   if (!hasBalance) return;
 
   const formatted = `${result.balance.toFixed(2)} ${result.currency}`;
-  const isLow = result.balance < LOW_BALANCE_THRESHOLD;
-  const isZero = result.balance <= 0;
-  const status = isZero ? "Out of credits" : isLow ? "Running low" : "Available";
+  const isBlocked = result.balance <= MIN_BALANCE_USD;
+  const isLow = !isBlocked && result.balance < MIN_BALANCE_USD * 2;
+  const status = isBlocked ? "Too low to start a session" : isLow ? "Running low" : "Available";
 
-  elements.balanceSummary.className = `balance-summary ${isZero ? "danger" : isLow ? "warning" : ""}`.trim();
+  elements.balanceSummary.className = `balance-summary ${isBlocked ? "danger" : isLow ? "warning" : ""}`.trim();
   elements.sidebarBalance.textContent = state.balanceVisible ? formatted : "••••••";
   elements.sidebarBalance.classList.toggle("is-masked", !state.balanceVisible);
   elements.balanceVisibilityToggle.setAttribute("aria-pressed", String(state.balanceVisible));
@@ -427,8 +443,14 @@ function renderBalance() {
   elements.balanceVisibilityToggle.title = state.balanceVisible ? "Hide balance" : "Show balance";
   elements.balanceVisibilityIcon.setAttribute("href", state.balanceVisible ? "#i-eye-off" : "#i-eye");
 
-  elements.balanceText.className = `field-hint ${isZero ? "danger" : isLow ? "warning" : ""}`.trim();
-  elements.balanceText.textContent = state.balanceVisible ? `Balance: ${formatted} — ${status.toLowerCase()}.` : `Balance hidden — ${status.toLowerCase()}.`;
+  const remainingSeconds = Math.max(0, Math.floor(result.balance / FAL_LUCY_REALTIME_RATE_PER_SECOND));
+  const hintDetail = isBlocked
+    ? `below the $${MIN_BALANCE_USD.toFixed(2)} minimum — top up to start a new session`
+    : isLow
+      ? `~${remainingSeconds}s of live time left at current rates`
+      : status.toLowerCase();
+  elements.balanceText.className = `field-hint ${isBlocked ? "danger" : isLow ? "warning" : ""}`.trim();
+  elements.balanceText.textContent = state.balanceVisible ? `Balance: ${formatted} — ${hintDetail}.` : `Balance hidden — ${status.toLowerCase()}.`;
 }
 
 async function refreshBalance({ notifyIfLow = false } = {}) {
@@ -441,21 +463,35 @@ async function refreshBalance({ notifyIfLow = false } = {}) {
   });
   if (!result || typeof result.balance !== "number") {
     state.balance = null;
+    // Unknown balance never blocks Start — the app must still work if
+    // fal's billing endpoint is unreachable or scoped out. If the account
+    // is genuinely out of funds, the actual connect attempt still fails
+    // fast with a precise "insufficient balance" message (see
+    // lucy-realtime-session.ts's tokenProvider handling) rather than a
+    // silent timeout, so nothing unsafe slips through this fallback.
+    state.balanceBlocksStart = false;
     renderBalance();
+    if (session) render(); // refreshes startBtn.disabled, which renderBalance() alone doesn't touch
     return null;
   }
 
   state.balance = result;
   const formatted = `${result.balance.toFixed(2)} ${result.currency}`;
-  const isLow = result.balance < LOW_BALANCE_THRESHOLD;
-  const isZero = result.balance <= 0;
+  const isBlocked = result.balance <= MIN_BALANCE_USD;
+  const isLow = !isBlocked && result.balance < MIN_BALANCE_USD * 2;
+  state.balanceBlocksStart = isBlocked;
   renderBalance();
+  if (session) render(); // refreshes startBtn.disabled, which renderBalance() alone doesn't touch
 
-  if (notifyIfLow && isLow && !lastBalanceWarningShown) {
+  if (notifyIfLow && (isBlocked || isLow) && !lastBalanceWarningShown) {
     lastBalanceWarningShown = true;
-    toast(isZero ? `Out of credits (${formatted})` : `Balance running low (${formatted})`);
-    addActivity(isZero ? `Balance is ${formatted} — sessions will fail until topped up` : `Balance is low: ${formatted}`);
-  } else if (!isLow) {
+    toast(isBlocked ? `Balance too low to start a session (${formatted})` : `Balance running low (${formatted})`);
+    addActivity(
+      isBlocked
+        ? `Balance is ${formatted} — at or below the $${MIN_BALANCE_USD.toFixed(2)} minimum, new sessions are blocked until topped up`
+        : `Balance is low: ${formatted}`
+    );
+  } else if (!isBlocked && !isLow) {
     lastBalanceWarningShown = false;
   }
 
@@ -540,6 +576,40 @@ function stopLiveTimer() {
   elements.liveTimer.hidden = true;
 }
 
+// ---------------------------------------------------------------------
+// Live balance guard — the pre-Start check (MIN_BALANCE_USD, in
+// refreshBalance()) only stops a *new* session from starting on a low
+// balance. It says nothing about a session that was already live before
+// the balance ran down mid-call. This polls the balance while live and
+// force-disconnects at the same $1.00 floor, so a running session can't
+// itself push the account into overdraft.
+// ---------------------------------------------------------------------
+
+const LIVE_BALANCE_POLL_MS = 10000;
+let liveBalancePollTimer = null;
+
+function startLiveBalanceGuard() {
+  if (liveBalancePollTimer) return;
+  liveBalancePollTimer = window.setInterval(async () => {
+    const result = await bridge.getBalance().catch(() => null);
+    if (!result || typeof result.balance !== "number") return; // unreachable balance check never force-stops a live call
+    if (result.balance <= MIN_BALANCE_USD) {
+      const formatted = `${result.balance.toFixed(2)} ${result.currency}`;
+      addActivity(`Auto-disconnected: balance dropped to ${formatted}, at or below the $${MIN_BALANCE_USD.toFixed(2)} floor`);
+      toast(`Disconnected — balance too low (${formatted})`);
+      clearTransientSessionMedia();
+      session.disconnect();
+    }
+  }, LIVE_BALANCE_POLL_MS);
+}
+
+function stopLiveBalanceGuard() {
+  if (liveBalancePollTimer) {
+    window.clearInterval(liveBalancePollTimer);
+    liveBalancePollTimer = null;
+  }
+}
+
 function clearTransientSessionMedia() {
   stopObsFrameLoop();
   const canvas = elements.obsCanvas;
@@ -613,8 +683,18 @@ function openSettings() {
 }
 
 function bindEvents() {
-  elements.startBtn.addEventListener("click", () => {
-    void refreshBalance({ notifyIfLow: true }); // catch "out of credits" before it surfaces as a confusing connect failure
+  elements.startBtn.addEventListener("click", async () => {
+    // Awaited, not fire-and-forget: a session must never start on a
+    // balance we already know is at/below the floor — catches "out of
+    // credits" before it can push the account into overdraft, rather than
+    // just surfacing it after the fact as a confusing connect failure.
+    const result = await refreshBalance({ notifyIfLow: true });
+    if (result && typeof result.balance === "number" && result.balance <= MIN_BALANCE_USD) {
+      const formatted = `${result.balance.toFixed(2)} ${result.currency}`;
+      toast(`Balance too low to start (${formatted}) — top up at fal.ai/dashboard/billing`);
+      addActivity(`Start blocked: balance ${formatted} is at or below the $${MIN_BALANCE_USD.toFixed(2)} minimum`);
+      return;
+    }
     session.connect().then(() => refreshCameras());
   });
   elements.stopBtn.addEventListener("click", () => {
