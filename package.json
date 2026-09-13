@@ -1,0 +1,68 @@
+{
+  "name": "deeplivecam-gui",
+  "version": "1.0.0",
+  "description": "Miko — a secure Electron control surface for live realtime character swap.",
+  "main": "main.js",
+  "author": "Miko",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "start": "npm run build && electron .",
+    "dev": "npm run build && electron . --dev",
+    "typecheck": "tsc --noEmit",
+    "check": "node --check main.js && node --check preload.js && node --check app.js",
+    "pack": "electron-builder --dir",
+    "dist": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "@fal-ai/client": "^1.10.1"
+  },
+  "devDependencies": {
+    "electron": "38.8.6",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.28",
+    "typescript": "^5"
+  },
+  "build": {
+    "appId": "com.deeplivecam.desktop",
+    "productName": "Miko",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "styles.css",
+      "app.js",
+      "dist/**/*",
+      "README.md",
+      "PRODUCT.md"
+    ],
+    "mac": {
+      "category": "public.app-category.video",
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "extendInfo": {
+        "NSCameraUsageDescription": "Miko uses the camera for live preview and the realtime swap session.",
+        "NSMicrophoneUsageDescription": "Miko can include microphone audio in a live session."
+      }
+    },
+    "win": {
+      "artifactName": "${productName}-${version}-windows-${arch}.${ext}",
+      "target": "nsis"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "AudioVideo"
+    }
+  }
+}

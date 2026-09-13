@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: file: https:; media-src 'self' blob: file: https:; connect-src 'self' https: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'" />
+  <title>Miko</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to workspace</a>
+
+  <svg class="svg-sprite" aria-hidden="true">
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M14.5 5 13 3h-2L9.5 5H5a3 3 0 0 0-3 3v9a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3V8a3 3 0 0 0-3-3h-4.5Z"/><circle cx="12" cy="12.5" r="4"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4"/></symbol>
+    <symbol id="i-log" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h10"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M5 3h12l4 4v14H3V3h2Z"/><path d="M7 3v6h10V3M7 21v-8h10v8"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3M9 9h6v6H9z"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v13M7 11l5 5 5-5M4 21h16"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4 10 14M8 6H5a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></symbol>
+    <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="m3 3 18 18M10.6 6.2A9.5 9.5 0 0 1 12 6c6 0 9.5 6 9.5 6a16 16 0 0 1-2.1 2.8M6.2 6.2C3.9 7.8 2.5 12 2.5 12s3.5 6 9.5 6a9.7 9.7 0 0 0 3-.5M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
+  </svg>
+
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Primary navigation">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><span></span></div>
+        <div class="brand-copy"><strong>Miko</strong><span>Live character studio</span></div>
+      </div>
+
+      <nav class="main-nav">
+        <button class="nav-item active" type="button" aria-current="page"><svg><use href="#i-camera" /></svg><span>Live camera</span></button>
+        <button id="openSettingsNav" class="nav-item" type="button"><svg><use href="#i-sliders" /></svg><span>Model settings</span></button>
+      </nav>
+
+      <div class="model-summary">
+        <div class="model-glyph" aria-hidden="true">M</div>
+        <div><b>Miko</b><span id="connectionSummary">Idle</span></div>
+        <span id="connectionDot" class="connection-dot offline" aria-label="Not connected"></span>
+      </div>
+
+      <div id="balanceSummary" class="balance-summary" hidden>
+        <span>Balance</span>
+        <strong id="sidebarBalance" aria-live="polite">••••••</strong>
+        <button id="balanceVisibilityToggle" type="button" aria-label="Show balance" aria-pressed="false" title="Show balance">
+          <svg aria-hidden="true"><use id="balanceVisibilityIcon" href="#i-eye" /></svg>
+        </button>
+      </div>
+      <p class="sidebar-version">Desktop <span id="appVersion">v1.0.0</span></p>
+    </aside>
+
+    <div class="main-column">
+      <header class="topbar">
+        <div class="window-drag-area"><div><h1>Live workspace</h1><p>Realtime character swap over WebRTC</p></div></div>
+        <div class="top-actions">
+          <div id="networkMeter" class="network-meter" data-quality="unknown" role="status">
+            <span></span><span></span><span></span><span></span>
+            <em id="networkMeterLabel">Network —</em>
+          </div>
+          <span id="topStatus" class="status-chip ready"><i></i><span>Ready</span></span>
+          <button id="themeToggle" class="icon-btn" type="button" aria-label="Switch to light theme" title="Toggle theme"><svg><use href="#i-sun" /></svg></button>
+          <button id="settingsToggle" class="icon-btn settings-shortcut" type="button" aria-label="Open model settings"><svg><use href="#i-sliders" /></svg></button>
+          <div class="window-controls" aria-label="Window controls">
+            <button type="button" data-window-action="minimize" aria-label="Minimize">—</button>
+            <button type="button" data-window-action="maximize" aria-label="Maximize">□</button>
+            <button class="close-window" type="button" data-window-action="close" aria-label="Close">×</button>
+          </div>
+        </div>
+      </header>
+
+      <main id="mainContent" class="workspace" tabindex="-1">
+        <section id="previewStage" class="preview-stage" aria-label="Live preview comparison">
+          <article class="preview-pane">
+            <header class="pane-heading">
+              <div><span class="pane-icon"><svg><use href="#i-camera" /></svg></span><span><b>Source</b><small>Your camera</small></span></div>
+              <span id="sourceState" class="pane-state idle"><i></i>Idle</span>
+            </header>
+            <div class="video-frame">
+              <video id="sourceVideo" autoplay muted playsinline></video>
+              <div id="sourceEmpty" class="empty-state"><span class="empty-icon"><svg><use href="#i-camera" /></svg></span><b>No camera running</b><p>Start the live session below.</p></div>
+              <span id="sourceBadge" class="video-badge">No camera</span>
+              <span id="sourceResolution" class="video-meta">—</span>
+            </div>
+          </article>
+
+          <article class="preview-pane result-pane">
+            <header class="pane-heading">
+              <div><span class="pane-icon lucy">M</span><span><b>Result</b><small>Miko output</small></span></div>
+              <span id="resultState" class="pane-state waiting"><i></i>Waiting</span>
+            </header>
+            <div class="video-frame">
+              <video id="resultVideo" autoplay playsinline></video>
+              <div id="resultEmpty" class="empty-state"><span class="empty-icon result"><svg><use href="#i-cpu" /></svg></span><b>Output is standing by</b><p>The transformed stream appears here once the session is live.</p></div>
+              <span id="resultBadge" class="video-badge accent">Waiting…</span>
+              <span id="resultResolution" class="video-meta">—</span>
+            </div>
+          </article>
+        </section>
+
+        <div id="cameraError" class="inline-alert" role="alert" hidden>
+          <svg><use href="#i-info" /></svg><div><b>Session could not start</b><p id="cameraErrorText">Check camera access and try again.</p></div><button id="retryCamera" type="button">Try again</button>
+        </div>
+
+        <section class="transport" aria-label="Session controls">
+          <div class="transport-copy"><strong id="sessionTitle">Ready to connect</strong><span id="sessionDetail">Video streams directly between your camera and Miko.</span></div>
+          <div class="transport-actions">
+            <button id="startBtn" class="btn primary" type="button"><svg><use href="#i-play" /></svg><span>Start Live</span></button>
+            <button id="stopBtn" class="btn secondary" type="button" disabled><svg><use href="#i-stop" /></svg><span>Stop</span></button>
+            <button id="fullscreenBtn" class="btn icon-only" type="button" aria-label="Open preview fullscreen" title="Fullscreen preview"><svg><use href="#i-expand" /></svg></button>
+          </div>
+        </section>
+
+        <section class="control-panel" aria-labelledby="inputHeading">
+          <header class="panel-header"><div><h2 id="inputHeading">Source setup</h2><p>Camera, prompt, and reference image for the swap.</p></div><span id="modeSummary">Character Swap</span></header>
+          <div class="control-layout">
+            <div class="source-controls">
+              <label for="cameraSelect">Camera source</label>
+              <div class="field-with-action"><select id="cameraSelect"><option value="">Detecting cameras…</option></select><button id="refreshCameras" class="field-action" type="button" aria-label="Refresh camera list" title="Refresh cameras">↻</button></div>
+            </div>
+
+            <div class="faceswap-controls">
+              <label for="promptInput">Prompt</label>
+              <textarea id="promptInput" rows="3" placeholder='e.g. "Match the color, material, fit, and identity of the reference."'></textarea>
+
+              <label id="filePickerLabel">Reference image</label>
+              <button id="chooseFileBtn" class="file-picker" type="button"><span class="file-picker-icon"><svg><use href="#i-folder" /></svg></span><span><b>Choose an image</b><small id="fileName">Nothing selected</small></span><svg class="chevron"><use href="#i-chevron" /></svg></button>
+              <p id="refWarning" class="field-hint" hidden></p>
+            </div>
+
+            <div class="session-facts" aria-label="Session facts">
+              <h3>Session facts</h3>
+              <dl>
+                <div><dt>Latency</dt><dd>Realtime (WebRTC)</dd></div>
+                <div><dt>Mode</dt><dd id="modeFact">Character Swap</dd></div>
+                <div><dt>Network</dt><dd id="networkFact">—</dd></div>
+                <div><dt>Resolution</dt><dd id="resolutionFact">1024 × 1024</dd></div>
+                <div><dt>Local recording</dt><dd>Off</dd></div>
+              </dl>
+              <p><svg><use href="#i-info" /></svg>Video is never recorded by Miko. Transient call and OBS frames are cleared when the call ends.</p>
+            </div>
+          </div>
+        </section>
+
+        <details class="activity-panel">
+          <summary><span><svg><use href="#i-log" /></svg><b>Session activity</b></span><span id="activityCount">1 event</span></summary>
+          <ol id="activityLog"><li><time>Now</time><span>Application ready</span></li></ol>
+        </details>
+      </main>
+
+      <footer class="statusbar">
+        <span id="systemStatus" class="system-state ready"><i></i>System ready</span><span>Model <b>Miko</b></span><span id="platformInfo">Desktop</span><span id="permissionStatus">Camera not requested</span>
+        <button id="saveBtn" class="save-button" type="button"><svg><use href="#i-save" /></svg>Save settings</button>
+      </footer>
+    </div>
+
+    <aside id="settingsPanel" class="settings-panel" aria-labelledby="settingsHeading">
+      <header class="settings-header"><div><h2 id="settingsHeading">Model settings</h2><p>Saved locally on this device.</p></div><button id="closeSettings" class="icon-btn close-settings" type="button" aria-label="Close settings"><svg><use href="#i-close" /></svg></button></header>
+      <div class="settings-scroll">
+        <label for="modeSelect">Mode</label>
+        <select id="modeSelect">
+          <option value="decart/lucy-2-5/realtime">Character Swap</option>
+          <option value="decart/lucy2-vton/realtime">Virtual Try-on</option>
+        </select>
+        <p class="field-hint">Switching mode while live stops the current session first.</p>
+
+        <label for="resolutionSelect">Resolution ceiling</label>
+        <select id="resolutionSelect">
+          <option value="1024">1024px (best fidelity)</option>
+          <option value="768">768px</option>
+          <option value="512">512px (lowest latency)</option>
+        </select>
+
+        <div class="settings-divider"></div>
+        <label class="switch-row"><span><b>Prompt expansion</b><small>Off keeps the swap literal to the reference.</small></span><input id="promptExpansion" type="checkbox" role="switch" /></label>
+
+        <div class="settings-divider"></div>
+        <label class="switch-row"><span><b>Send to OBS</b><small>High-quality browser-source feed, no plugin needed.</small></span><input id="obsToggle" type="checkbox" role="switch" /></label>
+        <div id="obsPanel" class="obs-panel" hidden>
+          <label for="obsUrlField">Browser Source URL</label>
+          <div class="field-with-action">
+            <input id="obsUrlField" type="text" readonly />
+            <button id="copyObsUrl" class="field-action" type="button" aria-label="Copy URL" title="Copy URL">⧉</button>
+          </div>
+          <p class="field-hint">In OBS: Add Source → Browser → paste this URL. Streams live output at up to 30fps, high JPEG quality.</p>
+        </div>
+
+        <div class="settings-divider"></div>
+        <button id="advancedBtn" class="advanced-button" type="button"><span><svg><use href="#i-sliders" /></svg>API key</span><svg><use href="#i-chevron" /></svg></button>
+      </div>
+      <div class="settings-footer"><button id="saveSettingsBtn" class="btn primary wide" type="button"><svg><use href="#i-save" /></svg>Save settings</button></div>
+    </aside>
+  </div>
+
+  <dialog id="advancedDialog" aria-labelledby="advancedHeading">
+    <form method="dialog">
+      <header><div><h2 id="advancedHeading">API key</h2><p>Stored locally on this device only.</p></div><button value="cancel" class="icon-btn" aria-label="Close"><svg><use href="#i-close" /></svg></button></header>
+      <div class="dialog-body">
+        <label for="apiKeyInput">API key</label>
+        <input id="apiKeyInput" type="password" placeholder="Paste your key" spellcheck="false" autocomplete="off" />
+        <p class="field-hint">Don't have one yet? <button id="openFalDashboard" class="link-button" type="button">Get a key <svg><use href="#i-external" /></svg></button></p>
+        <p id="keyStatusText" class="field-hint">Checking…</p>
+        <p id="balanceText" class="field-hint" hidden></p>
+      </div>
+      <footer><button value="cancel" class="btn secondary">Cancel</button><button id="applyKey" value="default" class="btn primary">Save key</button></footer>
+    </form>
+  </dialog>
+
+  <canvas id="obsCanvas" hidden></canvas>
+  <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <div id="srStatus" class="sr-only" aria-live="polite"></div>
+  <script src="dist/lucy-session.bundle.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
