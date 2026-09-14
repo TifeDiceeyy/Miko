@@ -56,8 +56,8 @@ Before each Start, Miko runs a quick connection check on the user's own
 machine:
 
 - whether traffic to the service goes through a VPN (macOS: route tables
-  and connected VPN services; Windows: `Find-NetRoute`, known VPN adapters
-  and built-in VPN connections)
+  and connected VPN services; Windows: the adapter the connection really
+  uses, known VPN adapters and built-in VPN connections)
 - whether a proxy is in the way
 - whether the service can be reached, and how fast the link is
 

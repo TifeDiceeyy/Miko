@@ -246,12 +246,17 @@ fal.ai's public docs pages.
      interfaces macOS creates itself have only link-local addresses, so a
      tunnel counts as a VPN only when it carries fal's route or has a
      routable address.
-   - Windows: PowerShell `Find-NetRoute` → `Get-NetAdapter` (matched
-     against known VPN adapter names; Hyper-V/WSL adapters don't count) plus
-     `Get-VpnConnection` for built-in VPNs. The IP is validated with
-     `net.isIP` before it is put in the command. Windows detection is
-     exercised by the parser tests and by the CI Windows job, not yet on a
-     real PC.
+   - Windows: the interface comes from the test connection itself. Its
+     local address belongs to exactly one entry in `os.networkInterfaces()`
+     (`interfaceForAddress`), so no shell is needed. PowerShell
+     (`Get-NetAdapter`, `Get-VpnConnection`, 8 s limit, nothing from the
+     network put in the command) only adds adapter descriptions and
+     connected built-in VPNs. Names and descriptions are matched against
+     known VPN clients; Hyper-V/WSL adapters don't count. The first version
+     relied on one `Find-NetRoute` PowerShell call with a 4 s limit and came
+     back empty on the CI Windows runner. CI's Windows job now runs the
+     real check (`MIKO_REAL_NETWORK_CHECK=1`) and fails if no interface is
+     found or PowerShell lists no adapters. Not yet tried on a real PC.
    - A proxy comes from Electron's `resolveProxy` for the fal URL.
    - Offline or unreachable **blocks** Start (no "Start anyway"). A VPN, a
      proxy or a slow link (>400 ms typical connect) **warns** with "Check

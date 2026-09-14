@@ -37,7 +37,9 @@ edit. **Function names are authoritative, line numbers are hints.**
   Keychain access):
   1. `CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac --universal`
   2. `codesign --deep --force --options runtime --entitlements entitlements.mac.plist --sign - release/mac-universal/Miko.app`
-  3. `CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --prepackaged release/mac-universal --mac dmg --universal`
+  3. `CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --prepackaged release/mac-universal/Miko.app --mac dmg --universal`
+     (point at the `.app`: electron-builder 26's dmgbuild copies the folder
+     you give it, so `release/mac-universal` ships `Miko.app/Miko.app`).
   4. `ditto -c -k --sequesterRsrc --keepParent release/mac-universal/Miko.app release/Miko-<version>-mac-universal.zip`
      (electron-builder's zip target would nest the app inside a
      `mac-universal/` folder).

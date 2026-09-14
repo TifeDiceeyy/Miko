@@ -3,12 +3,17 @@ const assert = require("node:assert/strict");
 const check = require("../lib/network-check");
 
 // Opt-in: touches the real network and OS tools. CI's Windows job sets it,
-// which is the only place the PowerShell detection runs on real Windows.
+// which is the only place the Windows detection runs on real Windows.
 test("real check on this machine finds the route to the service", { skip: !process.env.MIKO_REAL_NETWORK_CHECK }, async () => {
   const result = await check.checkNetwork({ resolveProxy: async () => "DIRECT" });
   console.log(`[network-check] ${process.platform}: ${JSON.stringify(result)}`);
   assert.equal(result.reachable, true, "the service should be reachable from here");
-  assert.ok(JSON.parse(result.signature).route, "the route lookup should name an interface");
+  assert.ok(JSON.parse(result.signature).route, "the check should name the interface the connection used");
+  if (process.platform === "win32") {
+    const gathered = await check.gatherRoute("win32");
+    console.log(`[network-check] PowerShell: ${JSON.stringify(gathered)}`);
+    assert.ok(gathered.adapters?.length, "PowerShell should list the network adapters");
+  }
 });
 
 test("macOS: reads the interface used for the service's address", () => {
@@ -38,28 +43,67 @@ test("macOS: the system's own link-local-only tunnels are not a VPN", () => {
   assert.deepEqual(vpn.warnings.map((w) => w.kind), ["vpn"]);
 });
 
-test("Windows: parses the route JSON and recognises VPN adapters", () => {
-  const nordlynx = check.parseWindowsRoute('{"alias":"NordLynx","name":"NordLynx","description":"NordLynx Tunnel","vpns":[]}');
-  assert.equal(nordlynx.interface, "NordLynx");
-  assert.deepEqual(check.evaluateNetwork({ platform: "win32", connectTimesMs: [150, 160, 170], route: nordlynx }).warnings.map((w) => w.kind), ["vpn"]);
+test("macOS: the route lookup wins, and the test connection fills in when it's missing", () => {
+  const interfaces = { en0: [{ address: "192.168.1.106", internal: false }], utun4: [{ address: "10.5.0.2", internal: false }] };
+  assert.equal(check.completeRoute({ interface: "en0" }, "utun4", interfaces).interface, "en0");
+  const fallback = check.completeRoute({}, "utun4", interfaces);
+  assert.deepEqual([fallback.interface, fallback.routable], ["utun4", true]);
+});
 
-  const wireguard = check.parseWindowsRoute('{"alias":"wg0","name":"wg0","description":"WireGuard Tunnel","vpns":null}');
-  assert.equal(check.evaluateNetwork({ platform: "win32", connectTimesMs: [150], route: wireguard }).warnings[0].kind, "vpn");
+test("finds the interface a connection used from its local address", () => {
+  const interfaces = {
+    "Wi-Fi": [{ address: "192.168.1.100", internal: false }],
+    NordLynx: [{ address: "10.5.0.2", internal: false }],
+    "Loopback Pseudo-Interface 1": [{ address: "127.0.0.1", internal: true }]
+  };
+  assert.equal(check.interfaceForAddress("10.5.0.2", interfaces), "NordLynx");
+  assert.equal(check.interfaceForAddress("::ffff:192.168.1.100", interfaces), "Wi-Fi");
+  assert.equal(check.interfaceForAddress("172.16.0.9", interfaces), null);
+  assert.equal(check.interfaceForAddress(null, interfaces), null);
+});
 
-  const builtIn = check.parseWindowsRoute('{"alias":"Wi-Fi","name":"Wi-Fi","description":"Intel(R) Wi-Fi 6 AX201 160MHz","vpns":"Work VPN"}');
-  assert.deepEqual(builtIn.vpnNames, ["Work VPN"]);
-  assert.match(check.evaluateNetwork({ platform: "win32", connectTimesMs: [150], route: builtIn }).warnings[0].message, /Work VPN/);
+test("Windows: reads PowerShell's adapter list, including its 5.1 JSON quirks", () => {
+  const plain = check.parseWindowsAdapters('{"adapters":[{"name":"Wi-Fi","description":"Intel(R) Wi-Fi 6 AX201 160MHz"},{"name":"home","description":"WireGuard Tunnel"}],"vpns":[]}');
+  assert.equal(plain.adapters.length, 2);
+  assert.deepEqual(plain.vpnNames, []);
+
+  const single = check.parseWindowsAdapters('{"adapters":{"name":"Ethernet","description":"Realtek PCIe GbE Family Controller"},"vpns":"Work VPN"}');
+  assert.deepEqual(single.adapters, [{ name: "Ethernet", description: "Realtek PCIe GbE Family Controller" }]);
+  assert.deepEqual(single.vpnNames, ["Work VPN"]);
+
+  const wrapped = check.parseWindowsAdapters('{"adapters":{"value":[{"name":"Ethernet","description":"x"}],"Count":1},"vpns":{"value":[],"Count":0}}');
+  assert.equal(wrapped.adapters[0].name, "Ethernet");
+  assert.deepEqual(wrapped.vpnNames, []);
+
+  assert.deepEqual(check.parseWindowsAdapters("not json"), {});
+  assert.deepEqual(check.parseWindowsAdapters(""), {});
+});
+
+test("Windows: recognises VPN adapters by name or description, and built-in VPNs", () => {
+  const adapters = [
+    { name: "Wi-Fi", description: "Intel(R) Wi-Fi 6 AX201 160MHz" },
+    { name: "NordLynx", description: "NordLynx Tunnel" },
+    { name: "home", description: "WireGuard Tunnel" }
+  ];
+  const warnings = (route) => check.evaluateNetwork({ platform: "win32", connectTimesMs: [150, 160, 170], route }).warnings;
+
+  assert.deepEqual(warnings(check.completeRoute({ adapters }, "NordLynx", {})).map((w) => w.kind), ["vpn"]);
+  assert.equal(warnings(check.completeRoute({ adapters }, "home", {}))[0].kind, "vpn", "a WireGuard tunnel named after its config is caught by its description");
+  // PowerShell timed out: the adapter name alone still catches well-known clients.
+  assert.equal(warnings(check.completeRoute({}, "ProtonVPN", {}))[0].kind, "vpn");
+  assert.match(warnings(check.completeRoute({ adapters, vpnNames: ["Work VPN"] }, "Wi-Fi", {}))[0].message, /Work VPN/);
 });
 
 test("Windows: ordinary and virtual (Hyper-V/WSL) adapters are not a VPN", () => {
-  for (const json of [
-    '{"alias":"Wi-Fi","name":"Wi-Fi","description":"Intel(R) Wi-Fi 6 AX201 160MHz","vpns":[]}',
-    '{"alias":"Ethernet","name":"Ethernet","description":"Realtek PCIe GbE Family Controller","vpns":[]}',
-    '{"alias":"vEthernet (WSL)","name":"vEthernet (WSL)","description":"Hyper-V Virtual Ethernet Adapter","vpns":[]}'
-  ]) {
-    assert.equal(check.evaluateNetwork({ platform: "win32", connectTimesMs: [150], route: check.parseWindowsRoute(json) }).warnings.length, 0, json);
+  const adapters = [
+    { name: "Wi-Fi", description: "Intel(R) Wi-Fi 6 AX201 160MHz" },
+    { name: "Ethernet", description: "Realtek PCIe GbE Family Controller" },
+    { name: "vEthernet (WSL)", description: "Hyper-V Virtual Ethernet Adapter" }
+  ];
+  for (const { name } of adapters) {
+    const route = check.completeRoute({ adapters, vpnNames: [] }, name, {});
+    assert.equal(check.evaluateNetwork({ platform: "win32", connectTimesMs: [150], route }).warnings.length, 0, name);
   }
-  assert.deepEqual(check.parseWindowsRoute("not json"), {});
 });
 
 test("a proxy or a slow link is a warning; no route to the service is a blocker", () => {
