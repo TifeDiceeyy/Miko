@@ -33,8 +33,9 @@ edit. **Function names are authoritative, line numbers are hints.**
   - CI passed on that commit, including the real check on a Windows
     runner.
   - The uploaded files match `SHA256SUMS.txt`.
-  - v1.0.2 (`b490ff8`) is still published; removing it is the owner's
-    call.
+  - v1.0.2 (`b490ff8`) was removed with its tag on 2026-09-14 at the
+    owner's request. It had 0 downloads. v1.1.0 is now the only published
+    release.
   - v1.0.1 (`2be3cc0`), which predates the socket guard, was removed with
     its tag on 2026-09-14 at the owner's request. It had 0 downloads.
   - Codex deleted v1.0.0, which had the phantom-billing bug, on 2026-09-14.
