@@ -282,27 +282,76 @@ test("Stop during the token request never hands the late token to the SDK", asyn
   fal.realtime.connect = originalConnect;
 });
 
-test("a second video-link failure in a row stops retrying and names the likely VPN or firewall", async () => {
+test("a WebRTC connect timeout hard-stops after one attempt, with no VPN verdict and no auto-retry", async () => {
+  installBrowserMocks();
+  const originalConnect = fal.realtime.connect;
+  let connectCalls = 0;
+  let closed = false;
+  fal.realtime.connect = (_endpoint, options) => {
+    connectCalls += 1;
+    // Never resolves iceServers/error — forces the real WEBRTC_CONNECT_TIMEOUT_MS
+    // giving-up timer to fire, exactly like fal's server going silent.
+    return { send() {}, close: () => { closed = true; } };
+  };
+  const session = new LucyRealtimeSession("decart/lucy-2-5/realtime");
+  session.setConnectGuard(async () => {});
+
+  await session.connect();
+  assert.equal(session.getSnapshot().state, "error", "a single timeout is terminal, not retried");
+  // The synthetic timeout has no evidence of a local network/VPN problem —
+  // it must not claim one.
+  assert.doesNotMatch(session.getSnapshot().error, /VPN, proxy or firewall/);
+  assert.match(session.getSnapshot().error, /didn't arrive within/);
+  assert.ok(closed, "the half-open signaling connection is hard-stopped, not left lingering");
+
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal(connectCalls, 1, "no automatic reconnect ever happens");
+
+  session.hardStop();
+  fal.realtime.connect = originalConnect;
+});
+
+test("a concurrent-session-limit error hard-stops immediately with its own accurate message, not a VPN guess", async () => {
   installBrowserMocks();
   const originalConnect = fal.realtime.connect;
   let connectCalls = 0;
   fal.realtime.connect = (_endpoint, options) => {
     connectCalls += 1;
-    queueMicrotask(() => options.onResult({ type: "error", error: "timed out waiting for WebRTC connection" }));
+    queueMicrotask(() => options.onResult({ type: "error", error: "Concurrent session limit reached." }));
     return { send() {}, close() {} };
   };
   const session = new LucyRealtimeSession("decart/lucy-2-5/realtime");
   session.setConnectGuard(async () => {});
 
   await session.connect();
-  assert.equal(session.getSnapshot().state, "reconnecting", "the first failure retries once");
-
-  await session.connect(true);
   assert.equal(session.getSnapshot().state, "error");
-  assert.match(session.getSnapshot().error, /VPN, proxy or firewall/);
-  await new Promise((resolve) => setTimeout(resolve, 1200));
-  assert.equal(connectCalls, 2, "no further automatic attempts");
+  assert.match(session.getSnapshot().error, /Too many active sessions/);
+  assert.doesNotMatch(session.getSnapshot().error, /VPN, proxy or firewall/);
+  assert.doesNotMatch(session.getSnapshot().error, /retrying automatically/, "no retry is actually attempted, so the message must not claim one");
+
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal(connectCalls, 1, "no automatic reconnect ever happens");
 
   session.hardStop();
   fal.realtime.connect = originalConnect;
+});
+
+test("an ICE connection failure after negotiating names a firewall/VPN specifically — a real observed signal, unlike a blind timeout", async () => {
+  installBrowserMocks();
+  const realtime = installFalMock();
+  const session = new LucyRealtimeSession("decart/lucy-2-5/realtime");
+  session.setConnectGuard(async () => {});
+  await session.connect();
+  assert.equal(session.getSnapshot().state, "live");
+
+  const pc = MockPeerConnection.latest;
+  pc.iceConnectionState = "failed";
+  pc.oniceconnectionstatechange?.();
+
+  assert.equal(session.getSnapshot().state, "error");
+  assert.match(session.getSnapshot().error, /firewall, VPN, or restrictive network/);
+  assert.equal(realtime.connectCalls, 1, "no automatic reconnect ever happens");
+
+  session.hardStop();
+  realtime.restore();
 });

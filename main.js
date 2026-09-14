@@ -55,8 +55,16 @@ function validObsToken(candidate) {
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
+// PNG frames, not JPEG, over the same multipart/x-mixed-replace transport —
+// Chromium (which OBS's Browser Source embeds) decodes an arbitrary
+// per-part Content-Type here just fine, it doesn't have to be JPEG. See
+// app.js's startObsFrameLoop() for why: canvas.toBlob's JPEG encoder always
+// applies 4:2:0 chroma subsampling regardless of the quality argument
+// (browsers expose no way to disable it) — a real, visible softening on
+// faces specifically. This is the exact same fix already proven in the
+// sibling Swapy project's OBS relay.
 function writeMjpegFrame(res, buffer) {
-  res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${buffer.length}\r\n\r\n`);
+  res.write(`--frame\r\nContent-Type: image/png\r\nContent-Length: ${buffer.length}\r\n\r\n`);
   res.write(buffer);
   res.write("\r\n");
 }
@@ -128,9 +136,18 @@ function sanitizeSettings(value) {
   const source = value && typeof value === "object" ? value : {};
   return {
     ...presets.resolveSelection(source),
-    resolution: [512, 768, 1024].includes(Number(source.resolution)) ? Number(source.resolution) : 1024,
+    // Landscape capture widths matching RESOLUTION_STEPS in lib/lucy-config.ts
+    // (Lucy 2.5's documented native resolution is 1280x720, not square — a
+    // legacy 512/768/1024 value from before this change falls back to 1280).
+    resolution: [640, 960, 1280].includes(Number(source.resolution)) ? Number(source.resolution) : 1280,
     prompt: String(source.prompt || "").slice(0, 2000),
-    enablePromptExpansion: Boolean(source.enablePromptExpansion),
+    // fal/Decart's own docs: prompt expansion "is on by default; keep it
+    // on" — it rewrites the instruction to fit each frame/reference, which
+    // is what keeps a swap stable instead of flickering. Only an explicit
+    // `false` from a real saved setting turns it off; an absent field
+    // (fresh install, or a settings file from before this field existed)
+    // defaults to Decart's own recommended on, not off.
+    enablePromptExpansion: source.enablePromptExpansion === undefined ? true : Boolean(source.enablePromptExpansion),
     cameraId: String(source.cameraId || "").slice(0, 500),
     theme: source.theme === "light" ? "light" : "dark"
   };

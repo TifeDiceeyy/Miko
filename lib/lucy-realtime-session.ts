@@ -1,12 +1,9 @@
 import { fal } from "@fal-ai/client";
 import {
-  CONCURRENCY_RETRY_BACKOFF_MS,
-  MAX_CONCURRENCY_RETRY_ATTEMPTS,
-  MAX_RECONNECT_ATTEMPTS,
   NETWORK_THRESHOLDS,
-  RECONNECT_BACKOFF_MS,
   RESOLUTION_STEPS,
   STATS_POLL_INTERVAL_MS,
+  WEBRTC_CONNECT_TIMEOUT_MS,
   type Resolution,
 } from "./lucy-config";
 import { installRealtimeSocketGuard } from "./realtime-socket-guard";
@@ -20,7 +17,6 @@ export type ConnectionState =
   | "idle"
   | "connecting"
   | "live"
-  | "reconnecting"
   | "error";
 
 export type NetworkQuality = "unknown" | "good" | "fair" | "poor";
@@ -41,7 +37,7 @@ export interface LucySessionSnapshot {
 }
 
 type Listener = () => void;
-export type ConnectGuard = (context: { isReconnect: boolean; endpoint: string }) => Promise<void>;
+export type ConnectGuard = (context: { endpoint: string }) => Promise<void>;
 
 /**
  * Wire shape for messages sent/received over the fal realtime signaling
@@ -136,24 +132,11 @@ export class LucyRealtimeSession {
   private pendingRemoteCandidates: RTCIceCandidateInit[] = [];
   private requestIds = new Set<string>();
   private socketTicket: number | null = null;
-  // Video-link failures in a row since the last manual Start or successful
-  // connect. A second one almost always means the network (VPN, proxy,
-  // firewall) blocks WebRTC, so retrying further only burns paid attempts.
-  private videoLinkFailures = 0;
-  private static readonly videoLinkBlockedMessage =
-    "The live video link couldn't get through your network twice in a row. A VPN, proxy or firewall is probably blocking it. Turn it off or switch networks, then press Start.";
-
-  // Set when the most recent failure was fal's own "Concurrent session
-  // limit reached" — switches scheduleReconnect to a longer, dedicated
-  // backoff instead of the normal one (see scheduleReconnect).
-  private isConcurrencyLimitError = false;
 
   // Single-flight + intentional-close bookkeeping (Fix #2).
   private connecting = false;
   private closedIntentionally = false;
 
-  private reconnectAttempt = 0;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private troubleGraceTimer: ReturnType<typeof setTimeout> | null = null;
 
   private statsTimer: ReturnType<typeof setInterval> | null = null;
@@ -209,10 +192,11 @@ export class LucyRealtimeSession {
   }
 
   /**
-   * Public connect entrypoint. The single-flight check and shared preflight
-   * guard apply identically to manual starts, Try again, and auto-reconnects.
+   * Public connect entrypoint — a single attempt, never auto-retried. Success
+   * goes live; any failure tears the session down completely and lands in
+   * "error", where it stays until the user presses Start again.
    */
-  async connect(isReconnect = false): Promise<void> {
+  async connect(): Promise<void> {
     if (this.connecting) return;
     if (this.snapshot.state === "live" || this.snapshot.state === "connecting") {
       return;
@@ -221,21 +205,10 @@ export class LucyRealtimeSession {
     const attempt = ++this.attemptGeneration;
     this.connecting = true;
     this.closedIntentionally = false;
-    this.clearReconnectTimer();
-    if (!isReconnect) {
-      this.reconnectAttempt = 0;
-      this.lastTroubleReason = null;
-      this.videoLinkFailures = 0;
-    }
-    // Reset per attempt — only this attempt's actual failure (if any)
-    // should decide which backoff schedule scheduleReconnect() picks.
-    this.isConcurrencyLimitError = false;
-    let gatePassed = false;
 
     try {
       this.setSnapshot({ state: "connecting", error: null });
-      await this.connectGuard?.({ isReconnect, endpoint: this.endpoint });
-      gatePassed = true;
+      await this.connectGuard?.({ endpoint: this.endpoint });
       if (attempt !== this.attemptGeneration || this.closedIntentionally) return;
       // Close-before-open: tear down any existing (even half-open) session
       // before creating a new one. There is never more than one at a time.
@@ -246,43 +219,21 @@ export class LucyRealtimeSession {
       await this.open(attempt);
       if (attempt !== this.attemptGeneration || this.closedIntentionally) return;
       this.setSnapshot({ state: "live", error: null });
-      this.reconnectAttempt = 0;
-      this.videoLinkFailures = 0;
-      this.isConcurrencyLimitError = false;
       this.startStatsPolling();
     } catch (err) {
       // disconnect() and endpoint switches deliberately invalidate the active
-      // attempt. Their rejected promise must not turn the resulting Idle state
-      // back into Error, or schedule a reconnect the user did not request.
+      // attempt. Their rejected promise must not turn the resulting Idle
+      // state back into Error.
       if (attempt !== this.attemptGeneration || this.closedIntentionally) return;
-      const videoLinkFailed = /timed out waiting for webrtc|ice connection failed/i.test(
-        err instanceof Error ? err.message : String(err)
-      );
-      if (videoLinkFailed) this.videoLinkFailures += 1;
-      const videoLinkBlocked = videoLinkFailed && this.videoLinkFailures >= 2;
-      const message = videoLinkBlocked ? LucyRealtimeSession.videoLinkBlockedMessage : this.describeError(err);
+      const message = this.describeError(err);
       // Invalidate this attempt before close() can emit a second, trailing
-      // callback for the same backend failure. Otherwise that duplicate can
-      // cancel and replace the retry timer we are about to schedule.
+      // callback for the same backend failure.
       ++this.attemptGeneration;
       this.connecting = false;
-      // Close whatever this failed attempt half-opened (e.g. a signaling
-      // connection that never finished ICE) right away instead of leaving
-      // it lingering server-side until the next retry's close-before-open —
-      // that gap is exactly what can make repeated failures look like a
-      // concurrency-limit problem even from a single client. The camera
-      // preview is untouched.
+      // Hard-stop unconditionally, regardless of which error this was — no
+      // attempt is ever left lingering server-side waiting on a retry.
       this.teardown({ keepIntentionalFlag: true, keepLocalStream: true });
-      this.lastTroubleReason = message;
       this.setSnapshot({ state: "error", error: message });
-      // Camera permission/device errors and account/config errors (bad key,
-      // exhausted balance, unauthorized) need the user to fix something —
-      // retrying on a timer just burns backoff attempts on a failure that
-      // can't self-resolve. Leave those for a manual "Retry" click; only
-      // auto-reconnect on transient network/signaling failures.
-      if (gatePassed && !videoLinkBlocked && !this.isUnrecoverableMediaError(err) && !this.isUnrecoverableAccountError(err)) {
-        this.scheduleReconnect();
-      }
     } finally {
       if (attempt === this.attemptGeneration) this.connecting = false;
     }
@@ -342,26 +293,12 @@ export class LucyRealtimeSession {
     await this.previewCamera();
   }
 
-  private isUnrecoverableMediaError(err: unknown): boolean {
-    const name = err instanceof DOMException ? err.name : undefined;
-    return (
-      name === "NotAllowedError" ||
-      name === "NotFoundError" ||
-      name === "OverconstrainedError" ||
-      name === "NotReadableError"
-    );
-  }
-
   /**
    * Account/config/start-gate failures (exhausted balance, bad or missing API
-   * key, unauthorized) need the user to actually do something before a
-   * retry could ever succeed — auto-reconnecting on the same broken
-   * credentials just burns through the whole RECONNECT_BACKOFF_MS ladder
-   * (up to ~31s across 5 attempts) restating the identical failure every
-   * time, which looks like flapping instead of one clear stop. Treated the
-   * same way camera permission errors already are: surface once, stay in
-   * Error state, and let the user retry manually after fixing the actual
-   * problem (topping up balance, fixing the key in Settings).
+   * key, unauthorized) need the user to actually do something before another
+   * attempt could ever succeed. There is no auto-reconnect regardless, but
+   * this still distinguishes "your account/config needs fixing" from a
+   * transient mid-session hiccup for handleSignalingError's messaging.
    */
   private isUnrecoverableAccountError(err: unknown): boolean {
     const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
@@ -389,10 +326,19 @@ export class LucyRealtimeSession {
     // Error objects — normalize both through the same pattern checks rather
     // than only recognizing these causes when something happened to wrap
     // them in an Error first.
+    //
+    // Each branch below names a DISTINCT, verified cause — never a guess
+    // dressed up as a diagnosis. In particular, a VPN/firewall verdict is
+    // only ever given when the underlying signal actually implicates local
+    // connectivity (a real ICE/peer-connection failure, or a browser-level
+    // DNS/fetch failure). Our own synthetic connect-timeout has no such
+    // evidence — it only means "nothing happened in time" — so it gets an
+    // honestly uncertain message instead of a confident wrong one.
     if (err instanceof Error || typeof err === "string") {
       const message = err instanceof Error ? err.message : err;
+
       if (/concurrent session limit reached|429|concurrent_requests_limit/i.test(message)) {
-        return `Too many active sessions on this account right now. The service may need time to release the previous worker; retrying automatically. (${message})`;
+        return `Too many active sessions on this account right now — fal.ai needs a moment to free the previous worker. Wait a bit, then press Start again. (${message})`;
       }
       if (/402|insufficient.?(credit|balance|fund)|payment.?required|exhausted.?(credit|balance)|balance[^.]*exhausted/i.test(message)) {
         return `Insufficient balance — your account is out of credits. Add funds, then click Connect again. (${message})`;
@@ -400,14 +346,26 @@ export class LucyRealtimeSession {
       if (/401|unauthorized|token/i.test(message)) {
         return `Authentication failed — your API key may be invalid or missing. Check it in Settings. (${message})`;
       }
-      // Catches both our own generated reasons (ICE/peer connection state,
-      // the WebRTC connect timeout, sustained packet loss) and generic
-      // browser network failures (a dead fetch for the token request) —
-      // called out explicitly so a bad connection isn't mistaken for a
-      // broken app or account. The network-strength meter in the topbar
-      // reflects the same signal while a session is live.
+      // Our own giving-up timer (see WEBRTC_CONNECT_TIMEOUT_MS) — not a
+      // reported failure of any kind, just silence. The cause is genuinely
+      // unknown: could be the local network, a VPN/firewall blocking
+      // WebRTC's UDP path, or fal.ai's own service being slow to respond.
+      // Must not claim to know which.
+      if (/timed out waiting for webrtc/i.test(message)) {
+        const seconds = WEBRTC_CONNECT_TIMEOUT_MS / 1000;
+        return `The live video link didn't arrive within ${seconds}s, so the session was stopped. This can be your network, a VPN/firewall blocking WebRTC, or fal.ai's service responding slowly — try again, and check your connection if it keeps happening.`;
+      }
+      // ICE/peer connection actually negotiated and then broke — a real,
+      // observed WebRTC connectivity failure, not a blind timeout. This is
+      // the one case confident enough to name a firewall/VPN specifically.
+      if (/ice connection|peer connection/i.test(message)) {
+        return `The live video connection broke (${message}). This usually means a firewall, VPN, or restrictive network is blocking the WebRTC media path — check your network and try again.`;
+      }
+      // Browser/DNS/fetch-level failures: the browser itself could not even
+      // reach the network, a stronger and more specific signal than a
+      // WebRTC-only timeout.
       if (
-        /ice connection|peer connection|timed out waiting for webrtc|sustained poor network|failed to fetch|fetch failed|could not reach fal\.ai|networkerror|err_name_not_resolved|err_internet_disconnected|err_connection|err_network|enotfound|econnrefused|econnreset|etimedout|eai_again/i.test(
+        /sustained poor network|failed to fetch|fetch failed|could not reach fal\.ai|networkerror|err_name_not_resolved|err_internet_disconnected|err_connection|err_network|enotfound|econnrefused|econnreset|etimedout|eai_again/i.test(
           message
         )
       ) {
@@ -418,15 +376,14 @@ export class LucyRealtimeSession {
     return String(err);
   }
 
-  /** Stops the live session. Disables auto-reconnect. Deliberately leaves
-   * an active camera preview running (see previewCamera()) — "Stop" ends
-   * the fal.ai connection, not your ability to see your own camera. Use
-   * stopPreview() separately, or hardStop(), to release the camera too. */
+  /** Stops the live session. Deliberately leaves an active camera preview
+   * running (see previewCamera()) — "Stop" ends the fal.ai connection, not
+   * your ability to see your own camera. Use stopPreview() separately, or
+   * hardStop(), to release the camera too. */
   disconnect() {
     ++this.attemptGeneration;
     this.closedIntentionally = true;
     this.connecting = false;
-    this.clearReconnectTimer();
     this.clearTroubleGraceTimer();
     this.cancelConnectWait("connection cancelled");
     this.stopStatsPolling();
@@ -462,7 +419,7 @@ export class LucyRealtimeSession {
         const rejectPending = this.connectReject;
         this.clearConnectWait();
         rejectPending?.(new Error("timed out waiting for WebRTC connection"));
-      }, 20000);
+      }, WEBRTC_CONNECT_TIMEOUT_MS);
     });
 
     // Every socket the SDK opens for this attempt is tied to this ticket, so
@@ -672,7 +629,6 @@ export class LucyRealtimeSession {
 
     if (msg.type === "error" || msg.error) {
       const errText = typeof msg.error === "string" ? msg.error : JSON.stringify(msg.error);
-      this.isConcurrencyLimitError = /concurrent session limit reached/i.test(errText ?? "");
       if (this.connectReject) {
         const reject = this.connectReject;
         this.clearConnectWait();
@@ -716,63 +672,52 @@ export class LucyRealtimeSession {
     this.connection?.send(message);
   }
 
+  // Passes the RAW error/text through untouched — never pre-formats with
+  // describeError() here. Both destinations below (connect()'s catch block,
+  // and handleConnectionTrouble) already call describeError() exactly once
+  // on whatever they receive; formatting here too would double-wrap the
+  // message (e.g. a second "(Concurrent session limit reached.)" nested
+  // inside the first).
   private handleSignalingError(err: unknown, attempt: number) {
     if (attempt !== this.attemptGeneration || this.closedIntentionally) return;
-    const reason = `Signaling error: ${this.describeError(err)}`;
-    this.isConcurrencyLimitError = /concurrent session limit reached/i.test(reason);
     if (this.connectReject) {
       const reject = this.connectReject;
       this.clearConnectWait();
-      reject(new Error(reason));
+      reject(err instanceof Error ? err : new Error(String(err)));
       return;
     }
-    this.handleConnectionTrouble(reason, this.isUnrecoverableAccountError(err));
+    this.handleConnectionTrouble(err instanceof Error ? err.message : String(err));
   }
 
   // ---------------------------------------------------------------------
-  // Reconnect logic (Fix #1)
+  // Connection trouble — always a hard stop, never a retry (see
+  // WEBRTC_CONNECT_TIMEOUT_MS's doc comment for why)
   // ---------------------------------------------------------------------
 
   private troubleHandled = false;
-  private lastTroubleReason: string | null = null;
 
   /** A precise, real reason should always accompany a state change — never a
-   * made-up placeholder. Every call site below passes the actual condition
-   * that triggered it (ICE state, peer connection state, the real error
-   * object, or the specific network metric that crossed a threshold).
+   * made-up placeholder. Every call site below passes the RAW condition that
+   * triggered it (an ICE/peer-connection state string, or signaling error
+   * text) — describeError() here is the one and only place that turns it
+   * into the accurate, user-facing message (see describeError's own doc
+   * comment on why each category is kept distinct).
    *
-   * `unrecoverable` marks a mid-session account/config failure (e.g. a
-   * revoked key or exhausted balance). Recoverable failures close the old
-   * paid session before entering the bounded reconnect schedule. */
-  private handleConnectionTrouble(reason?: string, unrecoverable = false) {
-    if (reason) this.lastTroubleReason = reason;
+   * Unconditional: whatever the cause — a mid-session account/config
+   * failure, an ICE/peer-connection break, a stalled signaling error — the
+   * session is torn down completely and left in "error" for the user to
+   * retry manually. There is no reconnect schedule to route into. */
+  private handleConnectionTrouble(reason: string) {
     if (this.closedIntentionally || this.troubleHandled) return;
     this.troubleHandled = true;
 
-    if (unrecoverable) {
-      ++this.attemptGeneration;
-      this.clearReconnectTimer();
-      this.clearTroubleGraceTimer();
-      this.teardown({ keepIntentionalFlag: true, keepLocalStream: true });
-      this.setSnapshot({ state: "error", error: reason ?? this.lastTroubleReason, remoteStream: null });
-      return;
-    }
-
-    const wasLive = this.snapshot.state === "live";
     ++this.attemptGeneration;
     this.connecting = false;
     this.clearTroubleGraceTimer();
     // A connect still waiting for video must settle, or its caller hangs.
     this.cancelConnectWait("connection interrupted");
     this.teardown({ keepIntentionalFlag: true, keepLocalStream: true });
-    if (!wasLive && /ice connection|peer connection failed/i.test(reason ?? "")) {
-      this.videoLinkFailures += 1;
-      if (this.videoLinkFailures >= 2) {
-        this.setSnapshot({ state: "error", error: LucyRealtimeSession.videoLinkBlockedMessage, remoteStream: null });
-        return;
-      }
-    }
-    this.scheduleReconnect();
+    this.setSnapshot({ state: "error", error: this.describeError(reason), remoteStream: null });
   }
 
   private startIceDisconnectGrace() {
@@ -786,37 +731,6 @@ export class LucyRealtimeSession {
   private recoverFromTransientDisconnect() {
     if (this.closedIntentionally) return;
     this.clearTroubleGraceTimer();
-  }
-
-  private scheduleReconnect() {
-    if (this.closedIntentionally) return;
-    this.clearReconnectTimer();
-
-    // A concurrency-limit failure gets its own longer, more patient backoff
-    // (see CONCURRENCY_RETRY_BACKOFF_MS) — it's expected server-side
-    // behavior on a low tier, not a fault to give up on quickly.
-    const schedule = this.isConcurrencyLimitError ? CONCURRENCY_RETRY_BACKOFF_MS : RECONNECT_BACKOFF_MS;
-    const maxAttempts = this.isConcurrencyLimitError ? MAX_CONCURRENCY_RETRY_ATTEMPTS : MAX_RECONNECT_ATTEMPTS;
-
-    if (this.reconnectAttempt >= maxAttempts) {
-      this.setSnapshot({
-        state: "error",
-        error: `Reconnect failed after multiple attempts (last cause: ${
-          this.lastTroubleReason ?? "unknown — see console"
-        }). Click Connect to retry manually.`,
-      });
-      return;
-    }
-
-    const delay = schedule[this.reconnectAttempt];
-    this.reconnectAttempt += 1;
-    this.setSnapshot({ state: "reconnecting", error: this.lastTroubleReason });
-
-    // Never a tight loop — exponential backoff (Fix #1).
-    this.reconnectTimer = setTimeout(() => {
-      this.troubleHandled = false;
-      void this.connect(true);
-    }, delay);
   }
 
   /** For non-fatal, per-message failures (a stray SDP/ICE apply error, a
@@ -833,13 +747,6 @@ export class LucyRealtimeSession {
     }, 6000);
   }
 
-  private clearReconnectTimer() {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-  }
-
   private clearTroubleGraceTimer() {
     if (this.troubleGraceTimer) {
       clearTimeout(this.troubleGraceTimer);
@@ -854,9 +761,13 @@ export class LucyRealtimeSession {
   private async acquireLocalStream(resolution: Resolution): Promise<MediaStream> {
     return navigator.mediaDevices.getUserMedia({
       video: {
+        // 16:9 landscape, matching Lucy 2.5's documented native resolution
+        // (1280×720) — see RESOLUTION_STEPS's doc comment. Both width and
+        // height are given explicitly (not just aspectRatio) since some
+        // browsers treat aspectRatio as a softer constraint.
         width: { ideal: resolution },
-        height: { ideal: resolution },
-        aspectRatio: 1,
+        height: { ideal: Math.round((resolution * 9) / 16) },
+        aspectRatio: 16 / 9,
         deviceId: this.preferredDeviceId ? { exact: this.preferredDeviceId } : undefined,
       },
       audio: false,
@@ -963,9 +874,11 @@ export class LucyRealtimeSession {
 
     try {
       await track.applyConstraints({
+        // 16:9 landscape — see acquireLocalStream()/RESOLUTION_STEPS's doc
+        // comment for why this is no longer a square constraint.
         width: { ideal: nextResolution },
-        height: { ideal: nextResolution },
-        aspectRatio: 1,
+        height: { ideal: Math.round((nextResolution * 9) / 16) },
+        aspectRatio: 16 / 9,
       });
       this.setSnapshot({ resolution: nextResolution });
     } catch (err) {

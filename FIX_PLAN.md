@@ -633,6 +633,13 @@ whether the body and clothing were replaced too. Record the verdict in
 `AGENTS.md` hard-won facts. Whatever the result, the combination stays
 available; labels or defaults change only if the owner asks.
 
+**Informal real-world signal, 2026-09-14 (not this structured A/B yet):**
+the owner hit exactly the predicted risk in real use — a Lite +
+Full-character-swap session connected and billed normally but produced no
+visible swap. Recorded as hard-won fact #7a in `AGENTS.md`. The actual
+15s/15s A/B above still hasn't been run; do that before treating this as
+fully confirmed either way.
+
 ### Owner decisions for Phase 6
 | ID | Decision | Recommendation |
 |----|----------|----------------|

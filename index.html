@@ -168,7 +168,7 @@
                 <div><dt>Model</dt><dd id="modeFact">Miko Pro · Full character swap</dd></div>
                 <div><dt>Rate</dt><dd id="rateFact">—</dd></div>
                 <div><dt>Network</dt><dd id="networkFact">—</dd></div>
-                <div><dt>Resolution</dt><dd id="resolutionFact">1024 × 1024</dd></div>
+                <div><dt>Resolution</dt><dd id="resolutionFact">1280 × 720</dd></div>
                 <div><dt>Local recording</dt><dd>Off</dd></div>
               </dl>
               <p><svg><use href="#i-info" /></svg>Video is never recorded by Miko. Transient call and OBS frames are cleared when the call ends.</p>
@@ -193,13 +193,13 @@
       <div class="settings-scroll">
         <label for="resolutionSelect">Resolution ceiling</label>
         <select id="resolutionSelect">
-          <option value="1024">1024px (best fidelity)</option>
-          <option value="768">768px</option>
-          <option value="512">512px (lowest latency)</option>
+          <option value="1280">1280×720 (best fidelity)</option>
+          <option value="960">960×540</option>
+          <option value="640">640×360 (lowest latency)</option>
         </select>
 
         <div class="settings-divider"></div>
-        <label class="switch-row"><span><b>Prompt expansion</b><small>Off keeps the swap literal to the reference.</small></span><input id="promptExpansion" type="checkbox" role="switch" /></label>
+        <label class="switch-row"><span><b>Prompt expansion</b><small>Recommended on — the model rewrites your instruction to fit each frame, which is what keeps the swap stable instead of flickering.</small></span><input id="promptExpansion" type="checkbox" role="switch" checked /></label>
 
         <div class="settings-divider"></div>
         <label class="switch-row"><span><b>Send to OBS</b><small>High-quality browser-source feed, no plugin needed.</small></span><input id="obsToggle" type="checkbox" role="switch" /></label>

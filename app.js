@@ -13,7 +13,6 @@ const STATE_LABELS = {
   idle: "Idle",
   connecting: "Connecting…",
   live: "Live",
-  reconnecting: "Reconnecting…",
   error: "Error"
 };
 
@@ -290,7 +289,7 @@ function render() {
   }
 
   const isLive = snap.state === "live";
-  const isBusy = snap.state === "connecting" || snap.state === "reconnecting";
+  const isBusy = snap.state === "connecting";
   const missingReference = !state.referenceImageUrl;
   elements.startBtn.disabled = isLive || isBusy || state.balanceBlocksStart || missingReference || state.checkingNetwork;
   elements.startBtn.title = missingReference
@@ -314,7 +313,6 @@ function render() {
     else {
       if (snap.state === "idle" && state.lastLoggedState !== "idle") addActivity("Session stopped");
       else if (snap.state === "error") addActivity(`Error: ${snap.error || "connection failed"}`);
-      else if (snap.state === "reconnecting") addActivity("Reconnecting…");
       stopLiveTimer();
     }
     state.lastLoggedState = snap.state;
@@ -330,9 +328,6 @@ function render() {
     if (elements.obsToggle.checked) startObsFrameLoop();
   } else if (!sessionActive && state.lastSessionActive) {
     state.lastSessionActive = false;
-    // An automatic reconnect passes through "error" and straight back into
-    // "reconnecting" in the same call stack. Only end the session if it is
-    // still inactive once that settles.
     queueMicrotask(finishSessionIfInactive);
   }
 }
@@ -439,7 +434,7 @@ async function chooseReferenceImage() {
     if (width < 768 || height < 768) {
       elements.refWarning.hidden = false;
       elements.refWarning.className = "field-hint warning";
-      elements.refWarning.textContent = "Works, but 768–1024px references give noticeably better fidelity.";
+      elements.refWarning.textContent = "Works, but 768–1280px references give noticeably better fidelity.";
     }
 
     const optimized = await resizeReferenceImage(dataUri);
@@ -483,16 +478,39 @@ function applySettings(settings) {
   elements.modelSelect.value = selection.model;
   elements.taskSelect.value = selection.task;
   state.currentTask = selection.task;
-  elements.resolutionSelect.value = String(settings.resolution || 1024);
+  elements.resolutionSelect.value = String(settings.resolution || 1280);
   elements.promptInput.value = settings.prompt || "";
   elements.promptExpansion.checked = Boolean(settings.enablePromptExpansion);
   applyTheme(settings.theme || "dark", false);
+  syncTaskOptionsForModel();
   updateSelectionCopy();
 }
 
 function labelModelOptions() {
   for (const option of elements.modelSelect.options) {
     option.textContent = `${modelName(option.value)} — ${formatRate(option.value)}`;
+  }
+}
+
+// Miko Lite (decart/lucy2-vton/realtime) is fal's virtual-try-on model — a
+// live 2026-09-14 session confirmed it bills normally but does not actually
+// perform a full character swap, only outfit/garment edits (see AGENTS.md
+// hard-won fact #7a). Full character swap is not a real option on Lite, so
+// it isn't offered as one: hidden and disabled whenever Lite is selected,
+// and any task left on "character" from an earlier Pro selection (or a
+// legacy saved setting) is switched to "outfit" before it can be sent.
+function syncTaskOptionsForModel() {
+  const characterOption = elements.taskSelect.querySelector('option[value="character"]');
+  const isLite = selectedModel() === presets.MODELS.lite;
+  if (characterOption) {
+    characterOption.disabled = isLite;
+    characterOption.hidden = isLite;
+  }
+  if (isLite && selectedTask() === "character") {
+    const nextPrompt = presets.promptAfterTaskChange(elements.promptInput.value, "character", "outfit");
+    elements.taskSelect.value = "outfit";
+    elements.promptInput.value = nextPrompt;
+    state.currentTask = "outfit";
   }
 }
 
@@ -628,19 +646,11 @@ async function refreshBalance({ notifyIfLow = false } = {}) {
   return result;
 }
 
-async function gateSessionStart({ isReconnect }) {
+async function gateSessionStart() {
   if (!state.referenceImageUrl) throw new Error(referenceRequirementText());
   session.updateEditParams(currentEditParams());
 
-  if (isReconnect && billingMeter.effectiveBalance() != null) {
-    if ((billingMeter.remainingSeconds(selectedModel()) ?? 0) <= 0) {
-      throw new Error(`Balance is at or below the $${MIN_BALANCE_USD.toFixed(2)} safety floor.`);
-    }
-    startBillingGuard();
-    return;
-  }
-
-  if (!isReconnect) stopBillingGuard();
+  stopBillingGuard();
 
   const result = await bridge.getBalance().catch((error) => {
     console.warn("[balance] preflight failed:", error?.message || error);
@@ -675,7 +685,6 @@ async function gateSessionStart({ isReconnect }) {
 // ---------------------------------------------------------------------
 
 const OBS_TARGET_FPS = 15;
-const OBS_JPEG_QUALITY = 0.9;
 let obsFrameTimer = null;
 let obsFrameEncoding = false;
 let obsEncodeSamples = [];
@@ -690,6 +699,13 @@ function startObsFrameLoop() {
     if (!video.videoWidth) return;
     const startedAt = performance.now();
     obsFrameEncoding = true;
+    // The canvas is sized to the result video's own native resolution
+    // (never a fixed/smaller size) — this is already byte-for-byte the same
+    // frame the app itself is showing. PNG, not JPEG: canvas.toBlob's JPEG
+    // encoder always applies 4:2:0 chroma subsampling regardless of the
+    // quality argument (no browser API to disable it) — a real, visible
+    // softening on faces specifically. Lossless PNG costs more CPU/frame
+    // size, but this relay is over localhost, so bandwidth is a non-issue.
     if (canvas.width !== video.videoWidth) canvas.width = video.videoWidth;
     if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -705,8 +721,7 @@ function startObsFrameLoop() {
         }
         blob.arrayBuffer().then((buf) => bridge.obsSendFrame(buf));
       },
-      "image/jpeg",
-      OBS_JPEG_QUALITY
+      "image/png"
     );
   }, 1000 / OBS_TARGET_FPS);
 }
@@ -791,7 +806,7 @@ function stopForBalance(result) {
 
 function recordBillingTick(now = Date.now()) {
   const snap = session?.getSnapshot();
-  if (lastBillingTickAt != null && ["connecting", "live", "reconnecting"].includes(snap?.state)) {
+  if (lastBillingTickAt != null && ["connecting", "live"].includes(snap?.state)) {
     const seconds = (now - lastBillingTickAt) / 1000;
     billingMeter.recordSpend(seconds, selectedModel());
     if (state.sessionRecord) state.sessionRecord.seconds += seconds;
@@ -854,7 +869,7 @@ function clearTransientSessionMedia() {
         bridge.obsSendFrame(buffer);
         bridge.obsClearFrame();
       });
-    }, "image/jpeg", 0.8);
+    }, "image/png");
   } else {
     bridge.obsClearFrame();
   }
@@ -880,7 +895,7 @@ function clearActivityForNewSession() {
 // why it ended and, for a session that actually ran, what it cost.
 function finishSessionIfInactive() {
   const snap = session?.getSnapshot();
-  if (!snap || ["connecting", "live", "reconnecting"].includes(snap.state)) return;
+  if (!snap || ["connecting", "live"].includes(snap.state)) return;
   stopBillingGuard();
   clearTransientSessionMedia();
   const record = state.sessionRecord;
@@ -1034,6 +1049,7 @@ function bindEvents() {
   elements.modelSelect.addEventListener("change", () => {
     stopBillingGuard();
     clearTransientSessionMedia();
+    syncTaskOptionsForModel();
     updateSelectionCopy();
     attachSession(selectedModel());
     if (billingMeter.effectiveBalance() != null) {
@@ -1131,6 +1147,7 @@ async function init() {
   }
   labelModelOptions();
   applySettings(settings);
+  syncTaskOptionsForModel();
   updateSelectionCopy();
   if (settings?.cameraId) elements.cameraSelect.value = settings.cameraId;
 

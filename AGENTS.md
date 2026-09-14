@@ -158,29 +158,32 @@ fal.ai's public docs pages.
    immediately, while still re-throwing so the SDK's internal state
    machine also unwinds correctly.
 
-4. **Account-level errors must not trigger auto-reconnect.** A balance-
-   exhausted or auth-failure error is not transient — retrying on the
-   normal `RECONNECT_BACKOFF_MS` ladder (1s/2s/4s/8s/16s, ~31s total) just
-   restates the identical failure five times before giving up, which looks
-   like flapping instead of one clear stop. See
-   `isUnrecoverableAccountError()` — treated the same way camera-permission
-   errors already are (`isUnrecoverableMediaError()`): surface once, stay
-   in a terminal `error` state, require a manual retry.
+4. **There is no auto-reconnect of any kind (changed 2026-09-14).** Every
+   `connect()` is a single attempt: success goes live, any failure —
+   account error, video-link timeout, mid-session ICE break, signaling
+   error — tears the session down completely and lands in a terminal
+   `error` state. This used to retry on a backoff ladder (`RECONNECT_BACKOFF_MS`
+   / `CONCURRENCY_RETRY_BACKOFF_MS`, both now deleted from
+   `lib/lucy-config.ts`); the owner explicitly removed that, since a failed
+   attempt has already spent real billed money and silently retrying (and
+   potentially billing again) on the user's behalf isn't this app's call to
+   make. `isUnrecoverableAccountError()` still exists and is still used to
+   classify signaling errors, just no longer to gate a retry that no longer
+   happens.
 
 5. **fal.ai does not publish how long a stale/killed session takes to free
    its concurrency slot server-side.** Checked the realtime docs,
-   concurrency-limits docs, and the SDK source — nothing. The tuned
-   `CONCURRENCY_RETRY_BACKOFF_MS` schedule (30s/30s/45s/60s/90s, in
-   `lib/lucy-config.ts`) is the best available proxy from real-world
-   testing, not an official guarantee. `"Concurrent session limit
-   reached."` is a normal, retryable condition fal can emit even from a
+   concurrency-limits docs, and the SDK source — nothing. `"Concurrent
+   session limit reached."` is a normal condition fal can emit even from a
    single well-behaved client — it is not automatically proof of a client
    bug. **Correction, found later the same day**: a real client bug (see
    #7 below, the `connectionKey` issue) was self-inflicting at least some
    of these — a leaked, never-torn-down phantom connection from an earlier
    attempt counts against your own account's concurrency limit. That bug
    is fixed; if "Concurrent session limit reached" still shows up
-   frequently after this fix, it's genuinely fal-side, not this app.
+   frequently after this fix, it's genuinely fal-side, not this app. As of
+   2026-09-14 this error is never auto-retried (see #4) — it surfaces
+   immediately via `describeError()` and the session hard-stops.
 
 6. **Never pass a fixed/stable `connectionKey` to `fal.realtime.connect()`
    in a plain (non-React) app.** The SDK caches its entire internal
@@ -238,6 +241,23 @@ fal.ai's public docs pages.
    fal's unreleased 1.11 alpha fixes these internally; re-check before
    upgrading.
 
+7a. **Miko Lite (`decart/lucy2-vton/realtime`) does not perform a full
+   character swap — informally confirmed live, 2026-09-14.** This answers
+   (but does not replace) the formal side-by-side comparison `FIX_PLAN.md`
+   §6.7 asks for and had marked `[LIVE — ask owner]`, still unresolved: a
+   real Full-character-swap session on Lite connected and billed normally,
+   but produced no visible swap. `FIX_PLAN.md` §6 had already flagged this
+   as an explicit risk before it was ever tested ("fal says its reference
+   is used 'as a character reference', but a full swap is **unproven**").
+   Lite is fal's virtual-try-on model; in practice it appears to only
+   actually apply outfit/garment edits, regardless of what the prompt asks
+   for. Per §6.4's standing owner decision, the Lite+character combination
+   stays available and unwarned unless the owner asks otherwise — this
+   entry exists so a future session doesn't have to rediscover the same
+   negative result by spending real money again. **Not yet run: the actual
+   §6.7 A/B (15s each, same reference/lighting, verdict recorded here)** —
+   this was one real user session, not that structured comparison.
+
 8. **Every Start runs a free network check first** (`lib/network-check.js`,
    main process only, IPC `net:check`). It opens nothing billable: a DNS
    lookup, three TCP connects to `fal.run:443` and local route/VPN queries.
@@ -263,10 +283,77 @@ fal.ai's public docs pages.
      again", "Start anyway" and "Cancel". "Start anyway" is remembered
      until the signature (issue kinds, VPN name, proxy, route interface)
      changes. If the check itself fails, Start goes ahead.
-   - After the call starts, two video-link failures in a row (WebRTC
-     timeout or ICE failure before going live) stop automatic retries with
-     a message naming a VPN, proxy or firewall.
+   - After Start, the WebRTC video link has `WEBRTC_CONNECT_TIMEOUT_MS`
+     (2s, `lib/lucy-config.ts`) to actually come up before the session
+     hard-stops. This is a real billing cap, not just a UX timeout — fal's
+     session (and billing) starts the moment its server accepts the
+     signaling connection, not when video reaches the client. The error
+     message is picked from real evidence, never a guess: a blind timeout
+     names no cause (could be local network, a VPN/firewall, or fal.ai
+     itself being slow); an actual ICE/peer-connection failure — one that
+     actually negotiated and then broke — is the only case confident
+     enough to name a firewall/VPN/restrictive network specifically. See
+     `describeError()` in `lucy-realtime-session.ts`.
    It only detects and advises — see the rejected features below.
+
+9. **Two real output-quality bugs found against fal/Decart's own published
+   prompting docs (`docs.platform.decart.ai/models/realtime/lucy-2.5-prompting`,
+   fetched 2026-09-14) — both were shipping backwards from the vendor's own
+   recommendation, likely the direct cause of "inconsistent/morphing" swap
+   complaints:**
+   - **Prompt expansion defaulted to OFF.** Decart's docs state it verbatim:
+     "It is on by default; keep it on" — it rewrites the raw instruction to
+     fit each frame/reference, which is what keeps a swap temporally stable
+     instead of flickering/morphing frame to frame. Miko's own default was
+     the opposite (`Boolean(undefined)` = `false` in `main.js`'s
+     `sanitizeSettings`, unchecked checkbox in `index.html`). Fixed: an
+     absent field now defaults to `true`; an explicit user choice (on or
+     off) is still respected either way. If a user has an existing saved
+     settings file with this field explicitly `false` from before this fix,
+     their choice is preserved — only a genuinely absent field changed.
+   - **Reference images were capped at 1024px, below Decart's own
+     recommendation.** Their reference-image guidance: "maintain sharp
+     quality at ~1280px longest side." `lib/reference-policy.js`'s
+     `computeReferenceSize()` was needlessly downscaling sharper uploads to
+     1024px. Cap raised to 1280px; `PREFERRED_REFERENCE_IMAGE_DIMENSION` in
+     `lib/lucy-config.ts` updated to match; the in-app fidelity hint text
+     updated from "768–1024px" to "768–1280px".
+   Decart's docs also specify a **~750-character / ~120-word prompt limit**
+   (longer triggers an error) and prompt-writing rules (concrete nouns over
+   pronouns, one focused edit per prompt, avoid filler adjectives like
+   "realistic"/"seamless"/"natural"/"cinematic") — `DEFAULT_PROMPTS` in
+   `lib/session-presets.js` was checked against these and already complies;
+   no change made there. If output quality complaints continue after the
+   two fixes above, re-check the *current* prompt text (if the user edited
+   it) against these rules before assuming a code bug.
+
+10. **Capture was square (1:1) — Lucy 2.5's native resolution is 16:9
+    landscape, not square. Fixed 2026-09-14.** Verified directly against
+    fal/Decart's model spec page
+    (`docs.platform.decart.ai/models/realtime/lucy-2.5`, fetched
+    2026-09-14): "Resolution: 1280×720", landscape (16:9) or portrait
+    (9:16) only — "the documentation makes no mention of 1:1 aspect ratio
+    support." Miko was forcing `aspectRatio: 1` (1024×1024 / 768×768 /
+    512×512) on every capture in `acquireLocalStream()` and
+    `stepResolution()` — feeding the model a shape it was never documented
+    to accept, which it then has to crop/pad/resize internally. This is a
+    stronger, independently-verified candidate for "inconsistent/morphing"
+    output than either fact #9 fix, found while investigating the same
+    complaint.
+
+    Fixed: `RESOLUTION_STEPS` in `lib/lucy-config.ts` changed from
+    `[1024, 768, 512]` (square) to `[1280, 960, 640]` (16:9 landscape
+    widths — height is always derived as `width * 9/16` at every
+    `getUserMedia`/`applyConstraints` call site, never stored separately).
+    1280 is Decart's actual documented native width; 960/640 are
+    lower-fidelity fallback steps for the existing poor-network adaptive
+    stepping mechanism (`stepResolution()`), not independently confirmed by
+    Decart's docs as supported alternate input sizes — if quality
+    complaints ever center specifically on the *degraded* (non-1280) steps,
+    that's the first thing to question, not the 1280 native case.
+    `index.html`'s `#resolutionSelect` options and `#resolutionFact`
+    default text, and `main.js`'s `sanitizeSettings` whitelist, updated to
+    match (a legacy 512/768/1024 saved value now falls back to 1280).
 
 ## Explicitly rejected features — don't re-propose these
 

@@ -2,14 +2,14 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { computeReferenceSize } = require("../lib/reference-policy");
 
-test("caps ordinary references at 1024px", () => {
+test("caps ordinary references at 1280px", () => {
   const result = computeReferenceSize(4000, 3000);
-  assert.deepEqual([result.width, result.height], [1024, 768]);
+  assert.deepEqual([result.width, result.height], [1280, 960]);
 });
 
 test("center-crops extreme panoramas so the short edge remains usable", () => {
   const result = computeReferenceSize(3000, 800);
-  assert.deepEqual([result.width, result.height], [1024, 512]);
+  assert.deepEqual([result.width, result.height], [1280, 640]);
   assert.equal(result.sourceWidth, 1600);
   assert.equal(result.sourceX, 700);
 });
