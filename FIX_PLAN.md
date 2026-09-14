@@ -29,9 +29,10 @@ edit. **Function names are authoritative, line numbers are hints.**
   `b490ff8`. Both installers were checked: the socket guard and the SDK
   delay fix are in, the old billing bug is gone, and the Mac app inside the
   DMG and the zip is ad-hoc signed with the camera permission.
-  - v1.0.1 (`2be3cc0`) is still published. It predates the socket guard, so
-    it still has the SDK bugs in `AGENTS.md` fact 7.
+  - v1.0.1 (`2be3cc0`), which predates the socket guard, was removed with
+    its tag on 2026-09-14 at the owner's request. It had 0 downloads.
   - Codex deleted v1.0.0, which had the phantom-billing bug, on 2026-09-14.
+  - v1.0.2 is now the only published release.
 - **Mac build recipe that works** (Developer ID signing stalls waiting for
   Keychain access):
   1. `CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac --universal`
