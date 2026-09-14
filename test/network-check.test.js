@@ -10,8 +10,12 @@ test("real check on this machine finds the route to the service", { skip: !proce
   assert.equal(result.reachable, true, "the service should be reachable from here");
   assert.ok(JSON.parse(result.signature).route, "the check should name the interface the connection used");
   if (process.platform === "win32") {
-    const gathered = await check.gatherRoute("win32");
-    console.log(`[network-check] PowerShell: ${JSON.stringify(gathered)}`);
+    // Checks that PowerShell works here, not how fast: a busy runner can take
+    // longer than the app's 8 s limit, which the app copes with (it caches
+    // the answer and falls back to the adapter name).
+    const started = Date.now();
+    const gathered = await check.gatherRoute("win32", null, { windowsTimeoutMs: 30000 });
+    console.log(`[network-check] PowerShell (${Date.now() - started} ms): ${JSON.stringify(gathered)}`);
     assert.ok(gathered.adapters?.length, "PowerShell should list the network adapters");
   }
 });
@@ -136,4 +140,44 @@ test("gathers real network facts on this machine without throwing", async () => 
   assert.equal(typeof result.reachable, "boolean");
   assert.ok(Array.isArray(result.warnings));
   assert.ok(Array.isArray(result.blockers));
+});
+
+test("Windows: PowerShell's answer is reused, and asked again for an adapter it hasn't seen", async () => {
+  let queries = 0;
+  let clock = 0;
+  let answer = { adapters: [{ name: "Wi-Fi", description: "Intel(R) Wi-Fi 6 AX201 160MHz" }], vpnNames: [] };
+  const source = check.createWindowsAdapterSource({ query: async () => { queries += 1; return answer; }, now: () => clock });
+
+  assert.deepEqual(await source.get("Wi-Fi"), answer);
+  await source.get("Wi-Fi");
+  source.prefetch();
+  assert.equal(queries, 1, "a fresh answer is reused");
+
+  answer = { adapters: [...answer.adapters, { name: "home", description: "WireGuard Tunnel" }], vpnNames: [] };
+  assert.equal((await source.get("home")).adapters.length, 2, "a VPN adapter that just appeared is looked up");
+  assert.equal(queries, 2);
+
+  clock += 6 * 60 * 1000;
+  await source.get("Wi-Fi");
+  assert.equal(queries, 3, "an answer older than five minutes is refreshed");
+});
+
+test("Windows: checks at the same time share one PowerShell run, and a failed run keeps the last good answer", async () => {
+  let queries = 0;
+  let release;
+  const shared = check.createWindowsAdapterSource({
+    query: () => { queries += 1; return new Promise((resolve) => { release = resolve; }); },
+    now: () => 0
+  });
+  const first = shared.get("Wi-Fi");
+  const second = shared.get("Wi-Fi");
+  release({ adapters: [{ name: "Wi-Fi", description: "x" }], vpnNames: [] });
+  assert.deepEqual(await first, await second);
+  assert.equal(queries, 1);
+
+  const results = [{ adapters: [{ name: "Wi-Fi", description: "x" }], vpnNames: [] }, {}];
+  const flaky = check.createWindowsAdapterSource({ query: async () => results.shift(), now: () => 0 });
+  await flaky.get("Wi-Fi");
+  const afterFailure = await flaky.get("Ethernet");
+  assert.deepEqual(afterFailure.adapters.map((a) => a.name), ["Wi-Fi"], "PowerShell timing out keeps the last good answer");
 });

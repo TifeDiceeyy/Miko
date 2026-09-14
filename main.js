@@ -300,6 +300,9 @@ async function migrateLegacySettings() {
 if (hasSingleInstanceLock) app.whenReady().then(async () => {
   await migrateLegacySettings();
   await writeObsPageFile();
+  // Windows: ask PowerShell about network adapters now, so the first Start's
+  // network check doesn't wait for it (see lib/network-check.js).
+  if (process.platform === "win32") networkCheck.warmUp();
   createMenu();
 
   session.defaultSession.setPermissionCheckHandler((webContents, permission) => {

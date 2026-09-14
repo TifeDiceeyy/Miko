@@ -281,7 +281,10 @@ fal.ai's public docs pages.
      (`interfaceForAddress`), so no shell is needed. PowerShell
      (`Get-NetAdapter`, `Get-VpnConnection`, 8 s limit, nothing from the
      network put in the command) only adds adapter descriptions and
-     connected built-in VPNs. Names and descriptions are matched against
+     connected built-in VPNs. Its answer is cached: asked at launch, reused
+     for 5 minutes, and asked again at once when the connection uses an
+     adapter it doesn't list (a VPN that just came up), so a slow
+     PowerShell (over 8 s on a busy CI runner) doesn't hold up Start. Names and descriptions are matched against
      known VPN clients; Hyper-V/WSL adapters don't count. The first version
      relied on one `Find-NetRoute` PowerShell call with a 4 s limit and came
      back empty on the CI Windows runner. CI's Windows job now runs the
