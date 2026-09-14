@@ -19,17 +19,29 @@ edit. **Function names are authoritative, line numbers are hints.**
     error, by Claude (`aef8df7`).
   - 21 tests pass. Typecheck, syntax checks and a non-billing in-app check
     pass.
-- **Release:** Codex deleted the v1.0.0 release and its tag (2026-09-14
-  06:09) right after the owner pasted the review table asking for it to be
-  taken down. Nothing is published right now.
+- **Release:** Codex deleted v1.0.0 (which had the billing bug) on
+  2026-09-14. **v1.0.1 is published**, with the owner's OK:
+  https://github.com/TifeDiceeyy/Miko/releases/tag/v1.0.1. Built from
+  `2be3cc0`. The DMG, zip and .exe were checked: the new code is in, the old
+  billing bug is gone, and the Mac app is ad-hoc signed with the camera
+  permission.
+- **Mac build recipe that works** (Developer ID signing stalls waiting for
+  Keychain access):
+  1. `CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac --universal`
+  2. `codesign --deep --force --options runtime --entitlements entitlements.mac.plist --sign - release/mac-universal/Miko.app`
+  3. `CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --prepackaged release/mac-universal --mac dmg --universal`
+  4. `ditto -c -k --sequesterRsrc --keepParent release/mac-universal/Miko.app release/Miko-<version>-mac-universal.zip`
+     (electron-builder's zip target would nest the app inside a
+     `mac-universal/` folder).
+
+  Skip step 2 and the app ships **unsigned, without the camera
+  permission**. Check with `codesign --verify --deep --strict` on the app
+  inside the DMG and inside the zip.
 - **Still open:**
-  - v1.0.1 installers must be rebuilt from `aef8df7` and verified, then
-    published **only with the owner's OK** (3.6).
-  - Mac signing (D2): builds are ad-hoc; Developer ID signing stalled
-    waiting for Keychain access.
+  - Mac signing (D2): builds are ad-hoc and not notarized.
   - App rename (D5): not done.
-  - Live tests 1.7 and 6.7: they bill, so they need the owner's OK.
-  - Nothing has been pushed to GitHub since `13f9508`.
+  - Live tests 1.7 and 6.7: they bill, so they need the owner's OK. The
+    owner skipped 6.7 for now on 2026-09-14.
 
 ---
 
