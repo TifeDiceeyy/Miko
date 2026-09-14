@@ -24,15 +24,20 @@ edit. **Function names are authoritative, line numbers are hints.**
     approved, Stop mid-handshake three times left 0 sockets and 0 `fal.run`
     connections.
   - 33 tests pass. Typecheck, syntax checks and in-app checks pass.
-- **Release:** **v1.0.2 is the latest**, published with the owner's OK:
-  https://github.com/TifeDiceeyy/Miko/releases/tag/v1.0.2, built from
-  `b490ff8`. Both installers were checked: the socket guard and the SDK
-  delay fix are in, the old billing bug is gone, and the Mac app inside the
-  DMG and the zip is ad-hoc signed with the camera permission.
+- **Release:** **v1.1.0 is the latest**, published 2026-09-14 with the
+  owner's OK: https://github.com/TifeDiceeyy/Miko/releases/tag/v1.1.0,
+  built from `4fe4707`. It adds the pre-connect network check. Checked:
+  - The Mac app inside the DMG and the zip is ad-hoc signed with the
+    camera permission, version 1.1.0, ID `com.tifediceeyy.miko`.
+  - The Windows app packed into the installer has the new check.
+  - CI passed on that commit, including the real check on a Windows
+    runner.
+  - The uploaded files match `SHA256SUMS.txt`.
+  - v1.0.2 (`b490ff8`) is still published; removing it is the owner's
+    call.
   - v1.0.1 (`2be3cc0`), which predates the socket guard, was removed with
     its tag on 2026-09-14 at the owner's request. It had 0 downloads.
   - Codex deleted v1.0.0, which had the phantom-billing bug, on 2026-09-14.
-  - v1.0.2 is now the only published release.
 - **Mac build recipe that works** (Developer ID signing stalls waiting for
   Keychain access):
   1. `CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac --universal`
@@ -63,7 +68,9 @@ edit. **Function names are authoritative, line numbers are hints.**
   VPN, a proxy, an unreachable service or a slow link, on macOS and
   Windows, and says what to turn off. Offline blocks; the rest warn with
   "Start anyway". Two video-link failures in a row stop retrying and name
-  the likely VPN or firewall. See `AGENTS.md` fact 8. 44 tests pass.
+  the likely VPN or firewall. See `AGENTS.md` fact 8. 47 tests pass
+  locally (the real-network test is opt-in); CI's Windows job runs all 48,
+  including the real check.
 - **Still open:**
   - Electron 38 is out of support (only 42–44 are supported) and has two
     high audit findings. Upgrade to Electron 44.
