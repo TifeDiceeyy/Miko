@@ -10,6 +10,29 @@ edit. **Function names are authoritative, line numbers are hints.**
 
 ---
 
+## Status (updated 2026-09-14)
+
+- **Done and committed:**
+  - Phases 1–5, by Codex (`200f539`).
+  - Phase 6 Model + Task picker, the exact SDK pin, the session-end reason
+    and cost line (4.4 / 6.5), and the billing guard now stopping after an
+    error, by Claude (`aef8df7`).
+  - 21 tests pass. Typecheck, syntax checks and a non-billing in-app check
+    pass.
+- **Release:** Codex deleted the v1.0.0 release and its tag (2026-09-14
+  06:09) right after the owner pasted the review table asking for it to be
+  taken down. Nothing is published right now.
+- **Still open:**
+  - v1.0.1 installers must be rebuilt from `aef8df7` and verified, then
+    published **only with the owner's OK** (3.6).
+  - Mac signing (D2): builds are ad-hoc; Developer ID signing stalled
+    waiting for Keychain access.
+  - App rename (D5): not done.
+  - Live tests 1.7 and 6.7: they bill, so they need the owner's OK.
+  - Nothing has been pushed to GitHub since `13f9508`.
+
+---
+
 ## Ground rules
 
 1. **No live fal.ai sessions without the owner's explicit OK — every time.**
