@@ -46,8 +46,14 @@ let latestFrame = null;
 const obsClients = new Set();
 
 function obsPageHtml() {
+  // style-src must allow 'unsafe-inline', or the browser silently drops the
+  // whole <style> block below (CSP falls back to default-src 'none' for any
+  // directive not explicitly set) — with no CSS applied at all, the <img>
+  // renders at its bare natural size, anchored top-left, instead of filling
+  // and centering in the Browser Source. That's exactly what shipped: OBS
+  // showed a tiny top-left thumbnail in an otherwise empty box.
   return "<!doctype html><html><head><meta charset=\"utf-8\">" +
-  "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src 'self'\">" +
+  "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src 'self'; style-src 'unsafe-inline'\">" +
   "<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}img{width:100%;height:100%;object-fit:contain;display:block}</style>" +
   "</head><body><img src=\"/stream.mjpeg\" alt=\"\" /></body></html>";
 }
