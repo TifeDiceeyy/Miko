@@ -55,6 +55,34 @@ function validObsToken(candidate) {
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
+function obsTokenPath() {
+  return path.join(app.getPath("userData"), "obs-token.txt");
+}
+
+// Persisted, not regenerated per launch. A fresh random token every launch
+// meant any URL saved into an OBS Browser Source went stale (401) the
+// moment Miko restarted — there was no way to "set it once" in OBS. This
+// token only guards the local relay (loopback-bound, plus this token, so an
+// arbitrary website open in a normal browser tab can't quietly read the
+// live swap feed off localhost) — it isn't a credential like the fal key,
+// so a plain file is fine, no safeStorage encryption needed.
+async function loadOrCreateObsToken() {
+  try {
+    const existing = (await readFile(obsTokenPath(), "utf8")).trim();
+    if (existing.length >= 16) return existing;
+  } catch (error) {
+    if (error.code !== "ENOENT") console.error("Unable to read saved OBS token", error);
+  }
+  const fresh = randomBytes(24).toString("base64url");
+  try {
+    await mkdir(path.dirname(obsTokenPath()), { recursive: true });
+    await writeFile(obsTokenPath(), fresh, "utf8");
+  } catch (error) {
+    console.error("Unable to persist OBS token — it will not survive a restart", error);
+  }
+  return fresh;
+}
+
 // PNG frames, not JPEG, over the same multipart/x-mixed-replace transport —
 // Chromium (which OBS's Browser Source embeds) decodes an arbitrary
 // per-part Content-Type here just fine, it doesn't have to be JPEG. See
@@ -69,13 +97,12 @@ function writeMjpegFrame(res, buffer) {
   res.write("\r\n");
 }
 
-function startObsServer(port) {
+async function startObsServer(port) {
+  if (obsServer) {
+    return { port: obsPort, token: obsToken };
+  }
+  const token = await loadOrCreateObsToken();
   return new Promise((resolve, reject) => {
-    if (obsServer) {
-      resolve({ port: obsPort, token: obsToken });
-      return;
-    }
-    const token = randomBytes(24).toString("base64url");
     const server = http.createServer((req, res) => {
       const expectedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
       if (!expectedHosts.has(req.headers.host || "")) {

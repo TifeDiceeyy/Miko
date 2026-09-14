@@ -355,6 +355,26 @@ fal.ai's public docs pages.
     default text, and `main.js`'s `sanitizeSettings` whitelist, updated to
     match (a legacy 512/768/1024 saved value now falls back to 1280).
 
+11. **The OBS relay's auth token was regenerated on every launch — any URL
+    saved into an OBS Browser Source went stale (401 Unauthorized) the next
+    time Miko started. Fixed 2026-09-14.** Found while setting up a real
+    OBS scene: two Browser Sources already existed pointing at
+    `http://127.0.0.1:5590/?token=...` from an earlier session, both
+    already correctly sized 1280×720, but both 401'd — the token they held
+    belonged to a process that no longer existed. `startObsServer()` used
+    to call `randomBytes(24)` fresh every time `obsServer` was null (i.e.
+    every app launch). Fixed: `loadOrCreateObsToken()` persists the token to
+    `<userData>/obs-token.txt` (plain text — this only guards the local
+    relay from other localhost processes/browser tabs reading the feed,
+    it's not a credential like the fal key, doesn't need `safeStorage`) and
+    reuses it on every subsequent launch. A Browser Source's URL in OBS can
+    now genuinely be configured once and left alone. If "OBS shows nothing"
+    or a 401 comes up again, check whether `obs-token.txt` still exists and
+    matches what's actually saved in OBS's scene collection JSON
+    (`%APPDATA%\obs-studio\basic\scenes\*.json`, `sources[].settings.url`)
+    before assuming a code regression — deleting/moving userData, or a
+    manually-edited OBS URL, would still cause exactly this symptom.
+
 ## Explicitly rejected features — don't re-propose these
 
 - **No auto-killing other processes** (VPNs, security software) to force
