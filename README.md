@@ -74,9 +74,9 @@ npm run dev
 
 `npm run dev` builds the renderer's fal.ai bundle (`lib/renderer-entry.ts` →
 `dist/lucy-session.bundle.js` via esbuild) and launches Electron. Add your
-own fal.ai key in the app's Settings panel (Model settings → fal.ai API key) —
-it's stored locally on your machine via Electron's `safeStorage`, never
-bundled or shared.
+own fal.ai key in **Model settings → API key → Save key** — it's stored
+locally on your machine via Electron's `safeStorage`, never bundled or
+shared.
 
 ## Architecture
 
