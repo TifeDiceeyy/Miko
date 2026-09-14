@@ -212,6 +212,32 @@ fal.ai's public docs pages.
    message through rather than a generic fallback — that has been an
    ongoing, explicit priority in this project, not a one-off ask.
 
+7. **fal SDK 1.10.1 can start or keep a session in the background.** Three
+   bugs, all worked around in `open()` and `lib/realtime-socket-guard.ts`:
+   - **Delayed sends re-open closed connections.** The 128 ms send throttle
+     still fires a pending send after `close()`, and on a closed connection
+     any send opens a brand-new connection with a fresh token. The throttle
+     also drops every send in a burst except the last, which loses trickled
+     ICE candidates. Fix: `throttleInterval: 0`.
+   - **Sockets mid-handshake survive `close()`.** `close()` only shuts a
+     socket the SDK already tracks as open, so one still mid-handshake
+     survives and, once open, sends the queued prompt. Fix: the socket guard
+     ties each fal socket to its connection attempt and closes it at
+     teardown, even mid-handshake. At most one fal socket can exist at a time.
+     A connection closed mid-handshake also *keeps its token*, so a late send
+     makes the SDK build a socket without asking for a new token. Blocking
+     tokens can't stop that; the guard closes such a socket in its
+     constructor, before any network activity.
+   - **Token-refresh loops outlive failed connects.** The refresh timer is
+     only cleared when leaving `active`, so every failed connect left a
+     refresh loop running forever. Fix: no `tokenExpirationSeconds` (no
+     refresh at all), and the token provider never settles for an abandoned
+     attempt.
+
+   `test/socket-leak.e2e.test.js` proves the fixes against the real SDK.
+   fal's unreleased 1.11 alpha fixes these internally; re-check before
+   upgrading.
+
 ## Explicitly rejected features — don't re-propose these
 
 - **No auto-killing other processes** (VPNs, security software) to force

@@ -224,3 +224,60 @@ test("Lite receives the full character-swap prompt and reference unchanged", asy
   session.hardStop();
   realtime.restore();
 });
+
+test("connects with no send throttling and no background token refresh", async () => {
+  installBrowserMocks();
+  const realtime = installFalMock();
+  const session = new LucyRealtimeSession("decart/lucy-2-5/realtime");
+  session.setConnectGuard(async () => {});
+  await session.connect();
+  assert.equal(realtime.options.throttleInterval, 0);
+  assert.equal(Object.hasOwn(realtime.options, "tokenExpirationSeconds"), false);
+  session.hardStop();
+  realtime.restore();
+});
+
+const settleWithin = (promise, ms = 50) => Promise.race([
+  promise.then(() => "resolved", () => "rejected"),
+  new Promise((resolve) => setTimeout(() => resolve("pending"), ms))
+]);
+
+test("an abandoned attempt never receives a token", async () => {
+  installBrowserMocks();
+  const realtime = installFalMock();
+  let tokenRequests = 0;
+  window.deepLiveCam.getToken = async () => { tokenRequests += 1; return "mock-token"; };
+  const session = new LucyRealtimeSession("decart/lucy-2-5/realtime");
+  session.setConnectGuard(async () => {});
+  await session.connect();
+  const tokenProvider = realtime.options.tokenProvider;
+  session.disconnect();
+
+  const requestsBefore = tokenRequests;
+  assert.equal(await settleWithin(tokenProvider("decart/lucy-2-5/realtime")), "pending");
+  assert.equal(tokenRequests, requestsBefore);
+  realtime.restore();
+});
+
+test("Stop during the token request never hands the late token to the SDK", async () => {
+  installBrowserMocks();
+  let releaseToken;
+  window.deepLiveCam.getToken = () => new Promise((resolve) => { releaseToken = () => resolve("late-token"); });
+  const originalConnect = fal.realtime.connect;
+  let options;
+  fal.realtime.connect = (_endpoint, suppliedOptions) => {
+    options = suppliedOptions;
+    return { send() {}, close() {} };
+  };
+  const session = new LucyRealtimeSession("decart/lucy-2-5/realtime");
+  session.setConnectGuard(async () => {});
+  const connecting = session.connect();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const pendingToken = options.tokenProvider("decart/lucy-2-5/realtime");
+  session.disconnect();
+  releaseToken();
+  assert.equal(await settleWithin(pendingToken), "pending");
+  await connecting;
+  fal.realtime.connect = originalConnect;
+});

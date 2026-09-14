@@ -7,9 +7,14 @@ import {
   RECONNECT_BACKOFF_MS,
   RESOLUTION_STEPS,
   STATS_POLL_INTERVAL_MS,
-  TOKEN_DURATION_SECONDS,
   type Resolution,
 } from "./lucy-config";
+import { installRealtimeSocketGuard } from "./realtime-socket-guard";
+
+const socketGuard = installRealtimeSocketGuard((message) => {
+  console.warn("[lucy]", message);
+  if (typeof window !== "undefined") window.deepLiveCam?.logEvent?.("warn", message);
+});
 
 export type ConnectionState =
   | "idle"
@@ -130,6 +135,7 @@ export class LucyRealtimeSession {
   private attemptGeneration = 0;
   private pendingRemoteCandidates: RTCIceCandidateInit[] = [];
   private requestIds = new Set<string>();
+  private socketTicket: number | null = null;
 
   // Set when the most recent failure was fal's own "Concurrent session
   // limit reached" — switches scheduleReconnect to a longer, dedicated
@@ -446,54 +452,70 @@ export class LucyRealtimeSession {
       }, 20000);
     });
 
+    // Every socket the SDK opens for this attempt is tied to this ticket, so
+    // teardown can close it even mid-handshake (see realtime-socket-guard.ts).
+    const ticket = socketGuard.beginAttempt();
+    this.socketTicket = ticket;
+    const isCurrent = () =>
+      attempt === this.attemptGeneration && !this.closedIntentionally && socketGuard.isActive(ticket);
+    // Never settling keeps the SDK from opening a socket, or scheduling
+    // anything, for an attempt we've already abandoned.
+    const neverSettles = () => new Promise<string>(() => {});
+
     // Signaling relay only — the peer connection itself isn't created yet;
     // it's built in buildPeerConnectionAndOffer once the server pushes
     // iceServers (see the SignalMessage docstring for why the order matters).
     try {
       this.connection = fal.realtime.connect<SignalMessage, SignalMessage>(this.endpoint, {
-        // No connectionKey override — let the SDK default to a fresh
-        // crypto.randomUUID() per call. See the removed STABLE_CONNECTION_KEY
-        // comment in lucy-config.ts for why a fixed key here is unsafe: it
-        // made every attempt reuse one never-cleaned-up cached state machine
-        // for the whole app lifetime, letting a stale attempt's internal
-        // token-refresh cycle keep a billable session alive after our own
-        // UI believed it was closed.
-        tokenExpirationSeconds: TOKEN_DURATION_SECONDS,
-        // Delegates to the main process over IPC — it holds the user's fal.ai
-        // key (see electron/key-store.ts) and mints a short-lived token. The
-        // renderer never sees the key itself.
+        // No connectionKey: the SDK then uses a fresh crypto.randomUUID() per
+        // call. A fixed key made every attempt reuse one never-cleaned-up
+        // cached state machine for the whole app lifetime.
         //
-        // IMPORTANT: fal's realtime client swallows a rejected tokenProvider
-        // internally — its connection state machine treats it as an
-        // "unauthorized" transition back to idle (see @fal-ai/client's
-        // realtime.js: authInProgress -> unauthorized -> idle via
-        // expireToken/closeConnection) and never invokes the onError
-        // callback below. Left alone, a 403 "balance exhausted", 401 bad
-        // key, or 429 rate-limit at the token-minting stage would never
-        // reach the user — it would just sit until our own 20s connect
-        // timeout fired and reported a generic network problem. Catch the
-        // rejection here ourselves and settle the connect wait immediately
-        // with the real error, still re-throwing so the SDK's own state
-        // machine also unwinds correctly.
-        tokenProvider: (app: string) =>
-          window.deepLiveCam.getToken(app).catch((err: unknown) => {
-            const error = err instanceof Error ? err : new Error(String(err));
-            if (attempt === this.attemptGeneration) {
-              if (this.connectReject) {
-                const reject = this.connectReject;
-                this.clearConnectWait();
-                reject(error);
-              } else if (this.isUnrecoverableAccountError(error)) {
-                // A revoked key or exhausted account cannot sustain the call.
-                this.handleSignalingError(error, attempt);
-              } else {
-                // A transient refresh/network blip must not tear down a
-                // healthy peer connection and start another paid session.
-                this.setTransientError("Temporary account check failed; the live session is continuing.");
+        // throttleInterval 0: in @fal-ai/client 1.10.1 the default 128 ms
+        // throttle drops all but the last send in a burst (losing trickled ICE
+        // candidates), and a send still pending when we close fires anyway —
+        // on a closed connection that re-opens a brand-new, unseen session.
+        throttleInterval: 0,
+        // No tokenExpirationSeconds: the SDK then schedules no token refresh.
+        // A token only matters when a socket opens (each reconnect mints a
+        // fresh one), and the refresh timer kept running forever after a
+        // failed connect because the SDK only clears it when leaving "active".
+        //
+        // The token comes from the main process over IPC; the renderer never
+        // sees the key. fal's client swallows a rejected tokenProvider (it
+        // goes authInProgress -> unauthorized -> idle without calling
+        // onError), so a 403/401/429 at minting would otherwise only surface
+        // as our generic 20 s timeout. The rejection handler below settles the
+        // connect wait with the real error, then re-throws so the SDK's state
+        // machine unwinds too.
+        tokenProvider: (app: string) => {
+          if (!isCurrent()) return neverSettles();
+          return window.deepLiveCam.getToken(app).then(
+            (token: string) => {
+              if (!isCurrent()) return neverSettles();
+              socketGuard.claimToken(token, ticket);
+              return token;
+            },
+            (err: unknown) => {
+              const error = err instanceof Error ? err : new Error(String(err));
+              if (attempt === this.attemptGeneration) {
+                if (this.connectReject) {
+                  const reject = this.connectReject;
+                  this.clearConnectWait();
+                  reject(error);
+                } else if (this.isUnrecoverableAccountError(error)) {
+                  // A revoked key or exhausted account cannot sustain the call.
+                  this.handleSignalingError(error, attempt);
+                } else {
+                  // A transient blip must not tear down a healthy peer
+                  // connection and start another paid session.
+                  this.setTransientError("Temporary account check failed; the live session is continuing.");
+                }
               }
+              throw error;
             }
-            throw error;
-          }),
+          );
+        },
         onResult: (result: SignalMessage) => this.handleSignal(result, attempt),
         onError: (err: unknown) => this.handleSignalingError(err, attempt),
       });
@@ -962,6 +984,12 @@ export class LucyRealtimeSession {
 
     this.connection?.close();
     this.connection = null;
+    // The SDK's close() only shuts a socket that's already open; this also
+    // closes one of ours still mid-handshake.
+    if (this.socketTicket !== null) {
+      socketGuard.endAttempt(this.socketTicket);
+      this.socketTicket = null;
+    }
     this.pendingRemoteCandidates = [];
     for (const requestId of this.requestIds) {
       void window.deepLiveCam.deleteRequestPayload(requestId).catch((error) => {

@@ -10,14 +10,6 @@ export const REALTIME_ENDPOINTS = {
 export type RealtimeEndpoint =
   (typeof REALTIME_ENDPOINTS)[keyof typeof REALTIME_ENDPOINTS];
 
-/**
- * Must match the `duration` sent to POST /tokens/realtime on the server
- * (app/api/fal/token/route.ts) AND the `tokenExpirationSeconds` passed to
- * fal.realtime.connect() on the client. A mismatch here is the #1 cause of
- * "the connection silently dies and won't reconnect" per fal's own docs.
- */
-export const TOKEN_DURATION_SECONDS = 120;
-
 /** Square capture resolutions, ordered high -> low fidelity. */
 export const RESOLUTION_STEPS = [1024, 768, 512] as const;
 export type Resolution = (typeof RESOLUTION_STEPS)[number];
