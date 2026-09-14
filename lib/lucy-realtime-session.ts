@@ -218,6 +218,7 @@ export class LucyRealtimeSession {
       this.teardown({ keepIntentionalFlag: true, keepLocalStream: true });
       await this.open(attempt);
       if (attempt !== this.attemptGeneration || this.closedIntentionally) return;
+      this.logConnectTiming(attempt, "connected");
       this.setSnapshot({ state: "live", error: null });
       this.startStatsPolling();
     } catch (err) {
@@ -225,6 +226,7 @@ export class LucyRealtimeSession {
       // attempt. Their rejected promise must not turn the resulting Idle
       // state back into Error.
       if (attempt !== this.attemptGeneration || this.closedIntentionally) return;
+      this.logConnectTiming(attempt, "failed", err instanceof Error ? err.message : String(err));
       const message = this.describeError(err);
       // Invalidate this attempt before close() can emit a second, trailing
       // callback for the same backend failure.
@@ -411,6 +413,7 @@ export class LucyRealtimeSession {
     // Register the waiter before opening signaling. A cached token or very
     // fast server response can otherwise deliver iceServers/error before the
     // promise callbacks exist, causing a false 20-second timeout.
+    this.connectSteps = { attempt, startedAt: performance.now(), reached: new Map() };
     const connected = new Promise<void>((resolve, reject) => {
       this.connectResolve = resolve;
       this.connectReject = reject;
@@ -455,7 +458,7 @@ export class LucyRealtimeSession {
         // sees the key. fal's client swallows a rejected tokenProvider (it
         // goes authInProgress -> unauthorized -> idle without calling
         // onError), so a 403/401/429 at minting would otherwise only surface
-        // as our generic 20 s timeout. The rejection handler below settles the
+        // as our connect timeout. The rejection handler below settles the
         // connect wait with the real error, then re-throws so the SDK's state
         // machine unwinds too.
         tokenProvider: (app: string) => {
@@ -464,6 +467,7 @@ export class LucyRealtimeSession {
             (token: string) => {
               if (!isCurrent()) return neverSettles();
               socketGuard.claimToken(token, ticket);
+              this.markConnectStep(attempt, "token");
               return token;
             },
             (err: unknown) => {
@@ -519,6 +523,38 @@ export class LucyRealtimeSession {
     reject?.(new Error(reason));
   }
 
+  // One log line per connect attempt with how long each step took, so the
+  // timeout can be tuned from real numbers (see WEBRTC_CONNECT_TIMEOUT_MS).
+  private static readonly connectStepOrder = ["token", "service ready", "offer sent", "answer", "video"] as const;
+  private connectSteps: { attempt: number; startedAt: number; reached: Map<string, number> } | null = null;
+
+  private markConnectStep(attempt: number, step: (typeof LucyRealtimeSession.connectStepOrder)[number]) {
+    const record = this.connectSteps;
+    if (!record || record.attempt !== attempt || record.reached.has(step)) return;
+    record.reached.set(step, performance.now() - record.startedAt);
+  }
+
+  private logConnectTiming(attempt: number, outcome: "connected" | "failed", reason?: string) {
+    const record = this.connectSteps;
+    if (!record || record.attempt !== attempt) return;
+    this.connectSteps = null;
+    const seconds = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
+    const steps = LucyRealtimeSession.connectStepOrder
+      .filter((step) => record.reached.has(step))
+      .map((step) => `${step} ${seconds(record.reached.get(step) ?? 0)}`)
+      .join(" · ") || "no step reached";
+    const total = seconds(performance.now() - record.startedAt);
+    if (outcome === "connected") {
+      window.deepLiveCam?.logEvent?.("info", `Connected in ${total} — ${steps}`);
+      return;
+    }
+    const waitingOn = LucyRealtimeSession.connectStepOrder.find((step) => !record.reached.has(step));
+    window.deepLiveCam?.logEvent?.(
+      "warn",
+      `Connect failed after ${total} — ${steps}${waitingOn ? ` · waiting on: ${waitingOn}` : ""}${reason ? ` (${reason})` : ""}`
+    );
+  }
+
   /**
    * Builds the peer connection and sends the one-and-only offer, once the
    * server has told us it's ready (its iceServers push). Guarded against a
@@ -544,6 +580,7 @@ export class LucyRealtimeSession {
       if (attempt !== this.attemptGeneration || pc !== this.pc) return;
       const [remoteStream] = event.streams;
       if (remoteStream) this.setSnapshot({ remoteStream });
+      this.markConnectStep(attempt, "video");
       if (this.connectResolve) {
         const resolve = this.connectResolve;
         this.clearConnectWait();
@@ -582,6 +619,7 @@ export class LucyRealtimeSession {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       this.sendSignal({ type: "offer", sdp: pc.localDescription?.sdp });
+      this.markConnectStep(attempt, "offer sent");
     } catch (err) {
       if (this.connectReject) {
         const reject = this.connectReject;
@@ -645,6 +683,7 @@ export class LucyRealtimeSession {
     // SignalMessage docstring) — everything else below requires this.pc
     // to already exist.
     if (msg.type === "iceServers" || (msg.iceServers && !this.pc)) {
+      this.markConnectStep(attempt, "service ready");
       void this.buildPeerConnectionAndOffer(msg.iceServers, attempt);
       return;
     }
@@ -655,6 +694,8 @@ export class LucyRealtimeSession {
     try {
       if (msg.type === "answer" && msg.sdp) {
         if (pc.signalingState === "have-local-offer") {
+          // Marked on arrival: the track event fires while the answer is applied.
+          this.markConnectStep(attempt, "answer");
           await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
           const queuedCandidates = this.pendingRemoteCandidates.splice(0);
           for (const candidate of queuedCandidates) await pc.addIceCandidate(candidate);
@@ -710,6 +751,8 @@ export class LucyRealtimeSession {
   private handleConnectionTrouble(reason: string) {
     if (this.closedIntentionally || this.troubleHandled) return;
     this.troubleHandled = true;
+    // A break while still connecting: record which step it got to.
+    this.logConnectTiming(this.attemptGeneration, "failed", reason);
 
     ++this.attemptGeneration;
     this.connecting = false;

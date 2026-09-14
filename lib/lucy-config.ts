@@ -43,7 +43,16 @@ export const PREFERRED_REFERENCE_IMAGE_DIMENSION = 1280;
  * giving up on a connect attempt and hard-stopping the session. fal.ai's
  * realtime session (and billing) starts the moment its server accepts the
  * signaling connection, not when video reaches the client — so this is a
- * real, hard cap on billed time for an attempt that isn't going to connect.
+ * real, hard cap on billed time for an attempt that isn't going to connect
+ * (at most about $0.40 on Miko Pro).
+ *
+ * The clock starts before the token is even requested, so it covers the
+ * whole handshake: token, signaling, the service assigning a runner (its
+ * iceServers push), offer/answer, ICE and the first video frame. 2 s (set
+ * on 2026-09-14) was too short for that: the owner's next real Start timed
+ * out every time. 10 s is the owner's choice. Every attempt logs how long
+ * each step took ("Connected in …" / "Connect failed after …" in the log), so
+ * this can be tuned from real numbers.
  *
  * There is no automatic reconnect: once this fires (or any other connect
  * failure occurs), the session is torn down completely and Start must be
@@ -51,7 +60,7 @@ export const PREFERRED_REFERENCE_IMAGE_DIMENSION = 1280;
  * real money without the user seeing anything, so silently retrying (and
  * potentially billing again) on their behalf is not this app's call to make.
  */
-export const WEBRTC_CONNECT_TIMEOUT_MS = 2000;
+export const WEBRTC_CONNECT_TIMEOUT_MS = 10_000;
 
 // Do not set a fixed `connectionKey`: the SDK caches signaling state by that
 // key. Its random per-call default keeps each connect attempt isolated and

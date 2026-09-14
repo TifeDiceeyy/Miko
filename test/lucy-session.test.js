@@ -139,6 +139,24 @@ test("runs one shared gate before opening mocked signaling and WebRTC", async ()
   realtime.restore();
 });
 
+test("every connect logs how long each step took", async () => {
+  installBrowserMocks();
+  const logs = [];
+  window.deepLiveCam.logEvent = (level, message) => logs.push({ level, message });
+  const realtime = installFalMock();
+  const session = new LucyRealtimeSession("decart/lucy-2-5/realtime");
+  session.setConnectGuard(async () => {});
+
+  await session.connect();
+  const line = logs.find(({ message }) => message.startsWith("Connected in"));
+  assert.ok(line, JSON.stringify(logs));
+  assert.equal(line.level, "info");
+  assert.match(line.message, /^Connected in \d+\.\ds — token \d+\.\ds · service ready \d+\.\ds · offer sent \d+\.\ds · answer \d+\.\ds · video \d+\.\ds$/);
+
+  session.hardStop();
+  realtime.restore();
+});
+
 test("a rejected gate prevents any billable signaling connection", async () => {
   installBrowserMocks();
   const realtime = installFalMock();
@@ -282,8 +300,10 @@ test("Stop during the token request never hands the late token to the SDK", asyn
   fal.realtime.connect = originalConnect;
 });
 
-test("a WebRTC connect timeout hard-stops after one attempt, with no VPN verdict and no auto-retry", async () => {
+test("a WebRTC connect timeout hard-stops after one attempt, with no VPN verdict and no auto-retry", async (t) => {
   installBrowserMocks();
+  const logs = [];
+  window.deepLiveCam.logEvent = (level, message) => logs.push({ level, message });
   const originalConnect = fal.realtime.connect;
   let connectCalls = 0;
   let closed = false;
@@ -296,8 +316,22 @@ test("a WebRTC connect timeout hard-stops after one attempt, with no VPN verdict
   const session = new LucyRealtimeSession("decart/lucy-2-5/realtime");
   session.setConnectGuard(async () => {});
 
-  await session.connect();
+  // Mocked setTimeout, so the 10 s limit passes without a real 10 s wait.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let settled = false;
+  const connecting = session.connect().then(() => { settled = true; });
+  for (let i = 0; i < 100 && !settled; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(1000);
+  }
+  await connecting;
+  t.mock.timers.reset();
   assert.equal(session.getSnapshot().state, "error", "a single timeout is terminal, not retried");
+  assert.match(session.getSnapshot().error, /didn't arrive within 10s/);
+  assert.ok(
+    logs.some(({ level, message }) => level === "warn" && /^Connect failed after \d+\.\ds — no step reached · waiting on: token \(timed out waiting for WebRTC connection\)$/.test(message)),
+    JSON.stringify(logs)
+  );
   // The synthetic timeout has no evidence of a local network/VPN problem —
   // it must not claim one.
   assert.doesNotMatch(session.getSnapshot().error, /VPN, proxy or firewall/);
