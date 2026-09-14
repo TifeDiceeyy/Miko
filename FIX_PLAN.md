@@ -24,12 +24,14 @@ edit. **Function names are authoritative, line numbers are hints.**
     approved, Stop mid-handshake three times left 0 sockets and 0 `fal.run`
     connections.
   - 33 tests pass. Typecheck, syntax checks and in-app checks pass.
-- **Release:** Codex deleted v1.0.0 (which had the billing bug) on
-  2026-09-14. **v1.0.1 is published**, with the owner's OK:
-  https://github.com/TifeDiceeyy/Miko/releases/tag/v1.0.1. Built from
-  `2be3cc0`. The DMG, zip and .exe were checked: the new code is in, the old
-  billing bug is gone, and the Mac app is ad-hoc signed with the camera
-  permission.
+- **Release:** **v1.0.2 is the latest**, published with the owner's OK:
+  https://github.com/TifeDiceeyy/Miko/releases/tag/v1.0.2, built from
+  `b490ff8`. Both installers were checked: the socket guard and the SDK
+  delay fix are in, the old billing bug is gone, and the Mac app inside the
+  DMG and the zip is ad-hoc signed with the camera permission.
+  - v1.0.1 (`2be3cc0`) is still published. It predates the socket guard, so
+    it still has the SDK bugs in `AGENTS.md` fact 7.
+  - Codex deleted v1.0.0, which had the phantom-billing bug, on 2026-09-14.
 - **Mac build recipe that works** (Developer ID signing stalls waiting for
   Keychain access):
   1. `CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac --universal`
