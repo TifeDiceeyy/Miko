@@ -17,8 +17,13 @@ edit. **Function names are authoritative, line numbers are hints.**
   - Phase 6 Model + Task picker, the exact SDK pin, the session-end reason
     and cost line (4.4 / 6.5), and the billing guard now stopping after an
     error, by Claude (`aef8df7`).
-  - 21 tests pass. Typecheck, syntax checks and a non-billing in-app check
-    pass.
+  - A one-session-at-a-time guarantee against three fal SDK 1.10.1 bugs
+    (delayed sends re-opening closed connections, sockets surviving
+    `close()` mid-handshake, token-refresh loops after failed connects), by
+    Claude (`d527fac`). See `AGENTS.md` fact 7. In the live check the owner
+    approved, Stop mid-handshake three times left 0 sockets and 0 `fal.run`
+    connections.
+  - 33 tests pass. Typecheck, syntax checks and in-app checks pass.
 - **Release:** Codex deleted v1.0.0 (which had the billing bug) on
   2026-09-14. **v1.0.1 is published**, with the owner's OK:
   https://github.com/TifeDiceeyy/Miko/releases/tag/v1.0.1. Built from
