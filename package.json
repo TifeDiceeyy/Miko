@@ -1,5 +1,6 @@
 {
-  "name": "deeplivecam-gui",
+  "name": "miko",
+  "productName": "Miko",
   "version": "1.0.2",
   "description": "Miko — a secure Electron control surface for live realtime character swap.",
   "main": "main.js",
@@ -23,12 +24,12 @@
   },
   "devDependencies": {
     "electron": "38.8.6",
-    "electron-builder": "^25.1.8",
+    "electron-builder": "^26.15.3",
     "esbuild": "^0.28",
     "typescript": "^5"
   },
   "build": {
-    "appId": "com.deeplivecam.desktop",
+    "appId": "com.tifediceeyy.miko",
     "productName": "Miko",
     "asar": true,
     "directories": {

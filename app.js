@@ -636,18 +636,22 @@ async function gateSessionStart({ isReconnect }) {
     console.warn("[balance] preflight failed:", error?.message || error);
     return null;
   });
-  if (!result || typeof result.balance !== "number") {
-    throw new Error("Could not verify account balance. Check the API key and internet connection, then try again.");
+  if (result && typeof result.balance === "number") {
+    billingMeter.observeBalance(result.balance);
+    state.balance = result;
+  } else if (billingMeter.hasRecentBalance()) {
+    // Billing service unreachable: start on the last real reading (at most
+    // 15 minutes old). The local meter still subtracts everything spent since.
+    addActivity(`Balance service unreachable — using the balance read ${billingMeter.minutesSinceObserved()} min ago`);
+  } else {
+    throw new Error("Could not verify account balance, and there's no balance reading from the last 15 minutes. Check the API key and internet connection, then try again.");
   }
 
-  billingMeter.observeBalance(result.balance);
   if ((billingMeter.remainingSeconds(selectedModel()) ?? 0) <= 0) {
-    state.balance = result;
     state.balanceBlocksStart = true;
     renderBalance();
     throw new Error(`Balance is at or below the $${MIN_BALANCE_USD.toFixed(2)} safety floor.`);
   }
-  state.balance = result;
   state.balanceBlocksStart = false;
   renderBalance();
   startBillingGuard();
@@ -1082,6 +1086,17 @@ async function init() {
 init().catch((error) => {
   console.error(error);
   toast(`Miko could not finish initializing: ${error?.message || error}`);
+});
+
+window.addEventListener("error", (event) => {
+  const message = event.error?.message || event.message || "unknown error";
+  bridge.logEvent("error", `Unexpected error: ${event.error?.stack || message}`);
+  toast(`Something went wrong: ${message}. Details are in the diagnostic log.`);
+});
+window.addEventListener("unhandledrejection", (event) => {
+  const reason = event.reason?.message || String(event.reason);
+  bridge.logEvent("error", `Unhandled promise rejection: ${event.reason?.stack || reason}`);
+  toast(`Something went wrong: ${reason}. Details are in the diagnostic log.`);
 });
 
 window.addEventListener("beforeunload", () => {

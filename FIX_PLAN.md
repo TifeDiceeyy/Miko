@@ -45,9 +45,26 @@ edit. **Function names are authoritative, line numbers are hints.**
   Skip step 2 and the app ships **unsigned, without the camera
   permission**. Check with `codesign --verify --deep --strict` on the app
   inside the DMG and inside the zip.
+- **Production-readiness review (2026-09-14), "important" items done:**
+  - Balance fallback: Start uses the last balance reading from within 15
+    minutes if the billing service is unreachable.
+  - Crash and error logging, with a one-time window reload after a crash.
+  - A navigation guard, so the window can't be replaced by another page.
+  - The CSP only allows fal's realtime host.
+  - electron-builder 26.15.3.
+  - An app icon.
+  - The rename to Miko. Settings migrate; the saved key has to be
+    re-entered once.
+  - An MIT LICENSE.
+  - CI: tests on Ubuntu, and the Windows installer built on Windows.
 - **Still open:**
+  - Electron 38 is out of support (only 42–44 are supported) and has two
+    high audit findings. Upgrade to Electron 44.
   - Mac signing (D2): builds are ad-hoc and not notarized.
-  - App rename (D5): not done.
+  - No automatic updates yet.
+  - The Windows installer has never been run on Windows.
+  - Request-payload deletion is unverified. fal needs an admin key for it,
+    and a 404 is logged as "Deleted".
   - Live tests 1.7 and 6.7: they bill, so they need the owner's OK. The
     owner skipped 6.7 for now on 2026-09-14.
 

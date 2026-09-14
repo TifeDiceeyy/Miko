@@ -55,3 +55,31 @@ test("restores recent spend state and ignores state older than 15 minutes", () =
   now += billing.MAX_PERSIST_AGE_MS + 1;
   assert.equal(new billing.BillingMeter({ storage, now: () => now }).effectiveBalance(), null);
 });
+
+test("a balance read in the last 15 minutes can stand in when the billing service is down", () => {
+  let now = 0;
+  const meter = new billing.BillingMeter({ now: () => now });
+  assert.equal(meter.hasRecentBalance(), false);
+  meter.observeBalance(3);
+  now += 10 * 60 * 1000;
+  assert.equal(meter.hasRecentBalance(), true);
+  assert.equal(meter.minutesSinceObserved(), 10);
+  now += 6 * 60 * 1000;
+  assert.equal(meter.hasRecentBalance(), false);
+});
+
+test("the reading's age survives an app restart", () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value)
+  };
+  let now = 1000;
+  const meter = new billing.BillingMeter({ storage, now: () => now });
+  meter.observeBalance(3);
+  now += 2 * 60 * 1000;
+  meter.recordSpend(5, VTON);
+  const restored = new billing.BillingMeter({ storage, now: () => now });
+  assert.equal(restored.hasRecentBalance(), true);
+  assert.equal(restored.minutesSinceObserved(), 2);
+});

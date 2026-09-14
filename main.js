@@ -277,11 +277,52 @@ function createWindow() {
     if (url.startsWith("https://")) shell.openExternal(url);
     return { action: "deny" };
   });
+  // Dropping a file or link on the window would otherwise replace the app
+  // with that page. Only the scheme is logged, never the path or URL.
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (url === mainWindow?.webContents.getURL()) return;
+    event.preventDefault();
+    let scheme = "unknown";
+    try { scheme = new URL(url).protocol; } catch {}
+    logAppEvent("warn", `Blocked the window from navigating away from Miko (${scheme})`);
+  });
 
   if (process.argv.includes("--dev")) {
     mainWindow.webContents.openDevTools({ mode: "detach" });
   }
 }
+
+// Without these, a crash leaves a blank window and nothing in the log.
+process.on("uncaughtException", (error) => {
+  logAppEvent("error", `Main process error: ${error?.stack || error}`);
+});
+process.on("unhandledRejection", (reason) => {
+  logAppEvent("error", `Main process unhandled rejection: ${reason?.stack || reason}`);
+});
+
+let lastWindowCrashAt = 0;
+app.on("render-process-gone", (_event, webContents, details) => {
+  logAppEvent("error", `Window process gone (${details.reason}, exit code ${details.exitCode})`);
+  if (details.reason === "clean-exit" || webContents.isDestroyed()) return;
+  // The crash already closed any live session (its sockets died with the
+  // process). Reload once; a second crash within a minute stays down so it
+  // can't loop.
+  const now = Date.now();
+  const reloadAllowed = now - lastWindowCrashAt > 60000;
+  lastWindowCrashAt = now;
+  void dialog.showMessageBox({
+    type: "error",
+    title: "Miko stopped unexpectedly",
+    message: `Miko's window stopped unexpectedly (${details.reason}).`,
+    detail: reloadAllowed
+      ? "Any live session was ended. The window will reload. Details are in the diagnostic log."
+      : "It stopped twice in a minute, so it won't reload automatically. Restart Miko; details are in the diagnostic log."
+  });
+  if (reloadAllowed) webContents.reload();
+});
+app.on("child-process-gone", (_event, details) => {
+  if (details.reason !== "clean-exit") logAppEvent("warn", `${details.type} process gone (${details.reason})`);
+});
 
 if (hasSingleInstanceLock) app.on("second-instance", () => {
   if (!mainWindow) return;
@@ -290,7 +331,24 @@ if (hasSingleInstanceLock) app.on("second-instance", () => {
   mainWindow.focus();
 });
 
-if (hasSingleInstanceLock) app.whenReady().then(() => {
+// Builds before the rename kept data under the old app name. Settings carry
+// over; the saved key can't, since it's encrypted to the old app identity
+// and the new one can't decrypt it, so the user re-enters it once.
+async function migrateLegacySettings() {
+  const target = settingsPath();
+  try {
+    await stat(target);
+    return;
+  } catch {}
+  try {
+    await mkdir(path.dirname(target), { recursive: true });
+    await copyFile(path.join(app.getPath("appData"), "deeplivecam-gui", "settings.json"), target);
+    logAppEvent("info", "Copied settings from the previous app folder (deeplivecam-gui)");
+  } catch {}
+}
+
+if (hasSingleInstanceLock) app.whenReady().then(async () => {
+  await migrateLegacySettings();
   createMenu();
 
   session.defaultSession.setPermissionCheckHandler((webContents, permission) => {

@@ -10,7 +10,7 @@ Creators and technical operators who need a focused desktop workspace for config
 
 ## Product Purpose
 
-DeepLiveCam GUI is a distributable Electron control surface for fal.ai's Decart Lucy 2.5 realtime model: live camera preview, prompt and reference-image configuration, and a WebRTC session against fal.ai's hosted API (no local GPU or Python backend required — see `README.md` for the architecture). Success means the user can confidently prepare a session, understand system state at a glance, and get a working live character swap or virtual try-on with minimal setup beyond their own fal.ai key.
+Miko is a distributable Electron control surface for fal.ai's Decart Lucy 2.5 realtime model: live camera preview, prompt and reference-image configuration, and a WebRTC session against fal.ai's hosted API (no local GPU or Python backend required — see `README.md` for the architecture). Success means the user can confidently prepare a session, understand system state at a glance, and get a working live character swap or virtual try-on with minimal setup beyond their own fal.ai key.
 
 ## Brand Personality
 

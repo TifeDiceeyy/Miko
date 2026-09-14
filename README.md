@@ -1,4 +1,4 @@
-# DeepLiveCam GUI
+# Miko
 
 An Electron desktop app for live character swap and virtual try-on, powered by
 fal.ai's Decart Lucy 2.5 realtime model over WebRTC.
