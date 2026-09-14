@@ -238,6 +238,31 @@ fal.ai's public docs pages.
    fal's unreleased 1.11 alpha fixes these internally; re-check before
    upgrading.
 
+8. **Every Start runs a free network check first** (`lib/network-check.js`,
+   main process only, IPC `net:check`). It opens nothing billable: a DNS
+   lookup, three TCP connects to `fal.run:443` and local route/VPN queries.
+   - macOS: `route -n get <ip>` for the interface fal traffic uses, plus
+     `scutil --nc list` for connected VPN services. The 10 or so `utun`
+     interfaces macOS creates itself have only link-local addresses, so a
+     tunnel counts as a VPN only when it carries fal's route or has a
+     routable address.
+   - Windows: PowerShell `Find-NetRoute` → `Get-NetAdapter` (matched
+     against known VPN adapter names; Hyper-V/WSL adapters don't count) plus
+     `Get-VpnConnection` for built-in VPNs. The IP is validated with
+     `net.isIP` before it is put in the command. Windows detection is
+     exercised by the parser tests and by the CI Windows job, not yet on a
+     real PC.
+   - A proxy comes from Electron's `resolveProxy` for the fal URL.
+   - Offline or unreachable **blocks** Start (no "Start anyway"). A VPN, a
+     proxy or a slow link (>400 ms typical connect) **warns** with "Check
+     again", "Start anyway" and "Cancel". "Start anyway" is remembered
+     until the signature (issue kinds, VPN name, proxy, route interface)
+     changes. If the check itself fails, Start goes ahead.
+   - After the call starts, two video-link failures in a row (WebRTC
+     timeout or ICE failure before going live) stop automatic retries with
+     a message naming a VPN, proxy or firewall.
+   It only detects and advises — see the rejected features below.
+
 ## Explicitly rejected features — don't re-propose these
 
 - **No auto-killing other processes** (VPNs, security software) to force

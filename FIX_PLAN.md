@@ -57,6 +57,11 @@ edit. **Function names are authoritative, line numbers are hints.**
     re-entered once.
   - An MIT LICENSE.
   - CI: tests on Ubuntu, and the Windows installer built on Windows.
+- **Pre-connect network check (v1.1.0):** every Start first checks for a
+  VPN, a proxy, an unreachable service or a slow link, on macOS and
+  Windows, and says what to turn off. Offline blocks; the rest warn with
+  "Start anyway". Two video-link failures in a row stop retrying and name
+  the likely VPN or firewall. See `AGENTS.md` fact 8. 44 tests pass.
 - **Still open:**
   - Electron 38 is out of support (only 42–44 are supported) and has two
     high audit findings. Upgrade to Electron 44.

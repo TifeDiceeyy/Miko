@@ -281,3 +281,28 @@ test("Stop during the token request never hands the late token to the SDK", asyn
   await connecting;
   fal.realtime.connect = originalConnect;
 });
+
+test("a second video-link failure in a row stops retrying and names the likely VPN or firewall", async () => {
+  installBrowserMocks();
+  const originalConnect = fal.realtime.connect;
+  let connectCalls = 0;
+  fal.realtime.connect = (_endpoint, options) => {
+    connectCalls += 1;
+    queueMicrotask(() => options.onResult({ type: "error", error: "timed out waiting for WebRTC connection" }));
+    return { send() {}, close() {} };
+  };
+  const session = new LucyRealtimeSession("decart/lucy-2-5/realtime");
+  session.setConnectGuard(async () => {});
+
+  await session.connect();
+  assert.equal(session.getSnapshot().state, "reconnecting", "the first failure retries once");
+
+  await session.connect(true);
+  assert.equal(session.getSnapshot().state, "error");
+  assert.match(session.getSnapshot().error, /VPN, proxy or firewall/);
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  assert.equal(connectCalls, 2, "no further automatic attempts");
+
+  session.hardStop();
+  fal.realtime.connect = originalConnect;
+});

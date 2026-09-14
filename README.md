@@ -46,11 +46,24 @@ remote request payload when the realtime service supplies a request ID.
 The local rotating diagnostic log contains lifecycle text only—never video
 frames, reference-image data, or API keys.
 
-The service currently lists Character Swap at $0.04/second and Virtual
-Try-on at $0.02/second. Miko verifies the current account balance before
-every manual start, retry, and automatic reconnect, preserves a $1 safety
-floor using a local spend timer, and uses balance polling only as a
-cross-check.
+Miko offers two models: Miko Pro ($0.04/second) and Miko Lite
+($0.02/second). Either can run a full character swap or an outfit-only
+task. Miko verifies the account balance before every manual start, retry
+and automatic reconnect, keeps a $1 safety floor with a local per-second
+spend timer, and uses balance polling only as a cross-check.
+
+Before each Start, Miko runs a quick connection check on the user's own
+machine:
+
+- whether traffic to the service goes through a VPN (macOS: route tables
+  and connected VPN services; Windows: `Find-NetRoute`, known VPN adapters
+  and built-in VPN connections)
+- whether a proxy is in the way
+- whether the service can be reached, and how fast the link is
+
+If something is likely to get in the way, Miko says what it found and lets
+the user turn it off and check again, or start anyway. It never changes
+network settings or stops other programs itself.
 
 ## Build
 

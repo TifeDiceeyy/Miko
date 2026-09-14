@@ -7,6 +7,13 @@ declare global {
       logEvent(level: "info" | "warn" | "error", message: string): void;
       onSystemSuspend(callback: (reason: string) => void): () => void;
       getCameraAccess(): Promise<string>;
+      checkConnection(): Promise<{
+        reachable: boolean;
+        blockers: { kind: string; message: string }[];
+        warnings: { kind: string; message: string; label?: string | null }[];
+        signature: string;
+        typicalConnectMs: number | null;
+      }>;
       openCameraSettings(): Promise<boolean>;
       openLogsFolder(): Promise<boolean>;
       pickMedia(kind: "image" | "video"): Promise<{ name: string; path: string; url: string } | null>;

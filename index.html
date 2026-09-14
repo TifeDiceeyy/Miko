@@ -112,6 +112,16 @@
           <svg><use href="#i-info" /></svg><div><b>Session could not start</b><p id="cameraErrorText">Check camera access and try again.</p></div><button id="openCameraSettings" type="button" hidden>Open camera settings</button><button id="retryCamera" type="button">Try again</button>
         </div>
 
+        <div id="networkWarning" class="inline-alert warning" role="alert" hidden>
+          <svg><use href="#i-info" /></svg>
+          <div><b id="networkWarningTitle">Your network may get in the way</b><div id="networkWarningText"></div></div>
+          <div class="inline-alert-actions">
+            <button id="networkCheckAgain" type="button">Check again</button>
+            <button id="networkStartAnyway" class="secondary" type="button">Start anyway</button>
+            <button id="networkCancel" class="secondary" type="button">Cancel</button>
+          </div>
+        </div>
+
         <section class="transport" aria-label="Session controls">
           <div class="transport-copy"><strong id="sessionTitle">Ready to connect</strong><span id="sessionDetail">Video streams directly between your camera and Miko.</span></div>
           <div class="transport-actions">

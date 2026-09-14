@@ -1,7 +1,7 @@
 {
   "name": "miko",
   "productName": "Miko",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Miko — a secure Electron control surface for live realtime character swap.",
   "main": "main.js",
   "author": "Miko",
@@ -12,7 +12,7 @@
     "start": "npm run build && electron .",
     "dev": "npm run build && electron . --dev",
     "typecheck": "tsc --noEmit",
-    "check": "node --check main.js && node --check preload.js && node --check app.js && node --check lib/billing-policy.js && node --check lib/reference-policy.js && node --check lib/session-presets.js",
+    "check": "node --check main.js && node --check preload.js && node --check app.js && node --check lib/billing-policy.js && node --check lib/reference-policy.js && node --check lib/session-presets.js && node --check lib/network-check.js",
     "test": "node --test test/*.test.js",
     "pack": "electron-builder --dir",
     "dist": "npm run build && electron-builder",
@@ -44,6 +44,7 @@
       "lib/billing-policy.js",
       "lib/reference-policy.js",
       "lib/session-presets.js",
+      "lib/network-check.js",
       "dist/**/*",
       "README.md",
       "PRODUCT.md"

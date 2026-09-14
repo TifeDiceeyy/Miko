@@ -623,6 +623,19 @@ ipcMain.handle("fal:delete-request-payload", async (event, requestId) => {
   return { ok: true };
 });
 
+const networkCheck = require("./lib/network-check");
+
+ipcMain.handle("net:check", async (event) => {
+  if (!isTrustedSender(event)) throw new Error("Untrusted request.");
+  const result = await networkCheck.checkNetwork({
+    resolveProxy: (url) => session.defaultSession.resolveProxy(url)
+  });
+  const issues = [...result.blockers, ...result.warnings].map((issue) => issue.kind);
+  const latency = result.typicalConnectMs != null ? `, ${Math.round(result.typicalConnectMs)} ms to the service` : "";
+  logAppEvent(issues.length ? "warn" : "info", `Connection check: ${issues.length ? issues.join(", ") : "clear"}${latency}`);
+  return result;
+});
+
 ipcMain.handle("shell:open-external", (event, url) => {
   if (!isTrustedSender(event)) return;
   if (typeof url === "string" && url.startsWith("https://")) shell.openExternal(url);

@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("deepLiveCam", {
     return () => ipcRenderer.removeListener("app:system-suspend", listener);
   },
   getCameraAccess: () => ipcRenderer.invoke("media:camera-access"),
+  checkConnection: () => ipcRenderer.invoke("net:check"),
   openCameraSettings: () => ipcRenderer.invoke("media:open-camera-settings"),
   openLogsFolder: () => ipcRenderer.invoke("log:open-folder"),
   pickMedia: (kind) => ipcRenderer.invoke("dialog:pick-media", kind),

@@ -41,6 +41,12 @@ const elements = {
   cameraErrorText: $("#cameraErrorText"),
   retryCamera: $("#retryCamera"),
   openCameraSettings: $("#openCameraSettings"),
+  networkWarning: $("#networkWarning"),
+  networkWarningTitle: $("#networkWarningTitle"),
+  networkWarningText: $("#networkWarningText"),
+  networkCheckAgain: $("#networkCheckAgain"),
+  networkStartAnyway: $("#networkStartAnyway"),
+  networkCancel: $("#networkCancel"),
   startBtn: $("#startBtn"),
   stopBtn: $("#stopBtn"),
   fullscreenBtn: $("#fullscreenBtn"),
@@ -107,6 +113,9 @@ const state = {
   currentTask: "character",
   sessionRecord: null,
   pendingEndReason: null,
+  checkingNetwork: false,
+  acceptedNetworkSignature: null,
+  lastNetworkCheck: null,
   cameraAccessError: null
 };
 
@@ -283,7 +292,7 @@ function render() {
   const isLive = snap.state === "live";
   const isBusy = snap.state === "connecting" || snap.state === "reconnecting";
   const missingReference = !state.referenceImageUrl;
-  elements.startBtn.disabled = isLive || isBusy || state.balanceBlocksStart || missingReference;
+  elements.startBtn.disabled = isLive || isBusy || state.balanceBlocksStart || missingReference || state.checkingNetwork;
   elements.startBtn.title = missingReference
     ? referenceRequirementText()
     : state.balanceBlocksStart && !isLive && !isBusy
@@ -294,7 +303,8 @@ function render() {
   elements.taskSelect.disabled = isLive || isBusy;
   elements.resolutionSelect.disabled = isLive || isBusy;
   elements.cameraSelect.disabled = isLive || isBusy;
-  $("span", elements.startBtn).textContent = isBusy ? "Connecting…" : isLive ? "Live" : "Start Live";
+  $("span", elements.startBtn).textContent = state.checkingNetwork ? "Checking network…" : isBusy ? "Connecting…" : isLive ? "Live" : "Start Live";
+  if (isLive || isBusy) elements.networkWarning.hidden = true;
 
   if (snap.localStream) elements.permissionStatus.textContent = "Camera allowed";
 
@@ -919,7 +929,7 @@ function openSettings() {
   window.setTimeout(() => elements.resolutionSelect.focus(), 210);
 }
 
-async function requestSessionStart() {
+async function requestSessionStart({ skipNetworkCheck = false } = {}) {
   const access = await bridge.getCameraAccess();
   if (access === "denied" || access === "restricted") {
     state.cameraAccessError = "macOS is blocking camera access for Miko. Open System Settings → Privacy & Security → Camera, turn Miko on, then click Try again.";
@@ -927,20 +937,73 @@ async function requestSessionStart() {
     return;
   }
   state.cameraAccessError = null;
+  if (!skipNetworkCheck && !(await passesConnectionCheck())) return;
+  hideNetworkWarning();
   clearActivityForNewSession();
   session.connect().then(() => refreshCameras());
 }
 
+// Runs before any paid connection. Its own failure never blocks Start, and
+// "Start anyway" is remembered until the VPN, proxy or route changes.
+async function passesConnectionCheck() {
+  state.checkingNetwork = true;
+  render();
+  let check = null;
+  try {
+    check = await bridge.checkConnection();
+  } catch (error) {
+    console.warn("[network] check failed:", error?.message || error);
+  } finally {
+    state.checkingNetwork = false;
+    render();
+  }
+  if (!check) return true;
+  state.lastNetworkCheck = check;
+  if (check.blockers.length) {
+    showNetworkWarning(check.blockers, { title: "Miko can't reach its service", allowStartAnyway: false });
+    return false;
+  }
+  if (check.warnings.length && check.signature !== state.acceptedNetworkSignature) {
+    showNetworkWarning(check.warnings, { title: "Your network may get in the way", allowStartAnyway: true });
+    return false;
+  }
+  return true;
+}
+
+function showNetworkWarning(issues, { title, allowStartAnyway }) {
+  elements.networkWarningTitle.textContent = title;
+  elements.networkWarningText.replaceChildren(...issues.map((issue) => {
+    const line = document.createElement("p");
+    line.textContent = issue.message;
+    return line;
+  }));
+  elements.networkStartAnyway.hidden = !allowStartAnyway;
+  elements.networkWarning.classList.toggle("warning", allowStartAnyway);
+  elements.networkWarning.hidden = false;
+  addActivity(`Connection check found: ${issues.map((issue) => issue.kind).join(", ")}`);
+}
+
+function hideNetworkWarning() {
+  elements.networkWarning.hidden = true;
+}
+
 function bindEvents() {
-  elements.startBtn.addEventListener("click", requestSessionStart);
+  elements.startBtn.addEventListener("click", () => requestSessionStart());
   elements.stopBtn.addEventListener("click", () => {
     state.pendingEndReason = "Stopped by you";
     stopBillingGuard();
     clearTransientSessionMedia();
     session.disconnect();
   });
-  elements.retryCamera.addEventListener("click", requestSessionStart);
+  elements.retryCamera.addEventListener("click", () => requestSessionStart());
   elements.openCameraSettings.addEventListener("click", () => bridge.openCameraSettings());
+  elements.networkCheckAgain.addEventListener("click", () => requestSessionStart());
+  elements.networkStartAnyway.addEventListener("click", () => {
+    state.acceptedNetworkSignature = state.lastNetworkCheck?.signature ?? null;
+    hideNetworkWarning();
+    requestSessionStart({ skipNetworkCheck: true });
+  });
+  elements.networkCancel.addEventListener("click", hideNetworkWarning);
 
   elements.balanceVisibilityToggle.addEventListener("click", () => {
     state.balanceVisible = !state.balanceVisible;

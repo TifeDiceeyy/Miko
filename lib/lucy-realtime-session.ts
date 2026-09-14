@@ -136,6 +136,12 @@ export class LucyRealtimeSession {
   private pendingRemoteCandidates: RTCIceCandidateInit[] = [];
   private requestIds = new Set<string>();
   private socketTicket: number | null = null;
+  // Video-link failures in a row since the last manual Start or successful
+  // connect. A second one almost always means the network (VPN, proxy,
+  // firewall) blocks WebRTC, so retrying further only burns paid attempts.
+  private videoLinkFailures = 0;
+  private static readonly videoLinkBlockedMessage =
+    "The live video link couldn't get through your network twice in a row. A VPN, proxy or firewall is probably blocking it. Turn it off or switch networks, then press Start.";
 
   // Set when the most recent failure was fal's own "Concurrent session
   // limit reached" — switches scheduleReconnect to a longer, dedicated
@@ -219,6 +225,7 @@ export class LucyRealtimeSession {
     if (!isReconnect) {
       this.reconnectAttempt = 0;
       this.lastTroubleReason = null;
+      this.videoLinkFailures = 0;
     }
     // Reset per attempt — only this attempt's actual failure (if any)
     // should decide which backoff schedule scheduleReconnect() picks.
@@ -240,6 +247,7 @@ export class LucyRealtimeSession {
       if (attempt !== this.attemptGeneration || this.closedIntentionally) return;
       this.setSnapshot({ state: "live", error: null });
       this.reconnectAttempt = 0;
+      this.videoLinkFailures = 0;
       this.isConcurrencyLimitError = false;
       this.startStatsPolling();
     } catch (err) {
@@ -247,7 +255,12 @@ export class LucyRealtimeSession {
       // attempt. Their rejected promise must not turn the resulting Idle state
       // back into Error, or schedule a reconnect the user did not request.
       if (attempt !== this.attemptGeneration || this.closedIntentionally) return;
-      const message = this.describeError(err);
+      const videoLinkFailed = /timed out waiting for webrtc|ice connection failed/i.test(
+        err instanceof Error ? err.message : String(err)
+      );
+      if (videoLinkFailed) this.videoLinkFailures += 1;
+      const videoLinkBlocked = videoLinkFailed && this.videoLinkFailures >= 2;
+      const message = videoLinkBlocked ? LucyRealtimeSession.videoLinkBlockedMessage : this.describeError(err);
       // Invalidate this attempt before close() can emit a second, trailing
       // callback for the same backend failure. Otherwise that duplicate can
       // cancel and replace the retry timer we are about to schedule.
@@ -267,7 +280,7 @@ export class LucyRealtimeSession {
       // retrying on a timer just burns backoff attempts on a failure that
       // can't self-resolve. Leave those for a manual "Retry" click; only
       // auto-reconnect on transient network/signaling failures.
-      if (gatePassed && !this.isUnrecoverableMediaError(err) && !this.isUnrecoverableAccountError(err)) {
+      if (gatePassed && !videoLinkBlocked && !this.isUnrecoverableMediaError(err) && !this.isUnrecoverableAccountError(err)) {
         this.scheduleReconnect();
       }
     } finally {
@@ -745,10 +758,20 @@ export class LucyRealtimeSession {
       return;
     }
 
+    const wasLive = this.snapshot.state === "live";
     ++this.attemptGeneration;
     this.connecting = false;
     this.clearTroubleGraceTimer();
+    // A connect still waiting for video must settle, or its caller hangs.
+    this.cancelConnectWait("connection interrupted");
     this.teardown({ keepIntentionalFlag: true, keepLocalStream: true });
+    if (!wasLive && /ice connection|peer connection failed/i.test(reason ?? "")) {
+      this.videoLinkFailures += 1;
+      if (this.videoLinkFailures >= 2) {
+        this.setSnapshot({ state: "error", error: LucyRealtimeSession.videoLinkBlockedMessage, remoteStream: null });
+        return;
+      }
+    }
     this.scheduleReconnect();
   }
 
