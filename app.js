@@ -468,7 +468,8 @@ function collectSettings() {
     prompt: elements.promptInput.value,
     enablePromptExpansion: elements.promptExpansion.checked,
     cameraId: elements.cameraSelect.value,
-    theme: elements.html.dataset.theme
+    theme: elements.html.dataset.theme,
+    obsEnabled: elements.obsToggle.checked
   };
 }
 
@@ -482,6 +483,12 @@ function applySettings(settings) {
   elements.promptInput.value = settings.prompt || "";
   elements.promptExpansion.checked = Boolean(settings.enablePromptExpansion);
   applyTheme(settings.theme || "dark", false);
+  // Restored here, but not acted on: the relay is only actually (re)started
+  // once during init(), after this checked state is set — see its call to
+  // toggleObsOutput() below. Re-triggering it from every applySettings()
+  // call (e.g. a later Save) would restart an already-running relay for
+  // no reason.
+  elements.obsToggle.checked = Boolean(settings.obsEnabled);
   syncTaskOptionsForModel();
   updateSelectionCopy();
 }
@@ -1150,6 +1157,15 @@ async function init() {
   syncTaskOptionsForModel();
   updateSelectionCopy();
   if (settings?.cameraId) elements.cameraSelect.value = settings.cameraId;
+
+  // If OBS output was on last time, start the relay immediately rather
+  // than making the user re-flip the toggle every launch — the URL is now
+  // permanent (see main.js's startObsServer()), so OBS just needs
+  // something listening on it as early as possible. No frames flow until
+  // a real session goes live either way (startObsFrameLoop() no-ops
+  // without a video track), so this is inert beyond opening the local
+  // HTTP server.
+  if (elements.obsToggle.checked) void toggleObsOutput();
 
   attachSession(selectedModel());
   await refreshKeyStatus();

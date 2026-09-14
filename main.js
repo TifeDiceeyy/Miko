@@ -1,6 +1,5 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, powerMonitor, session, shell, safeStorage, systemPreferences } = require("electron");
 const { appendFile, copyFile, mkdir, readFile, stat, writeFile } = require("node:fs/promises");
-const { randomBytes, timingSafeEqual } = require("node:crypto");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const http = require("node:http");
@@ -34,53 +33,23 @@ function isTrustedSender(event) {
 // Source at the URL this returns and it just works.
 // ---------------------------------------------------------------------
 
-const OBS_DEFAULT_PORT = 5590;
+// No auth token: an explicit owner decision (2026-09-14), trading away the
+// protection it gave (stopping some other local process, or a website open
+// in a normal browser tab, from quietly fetching this URL and reading the
+// live swap feed) for a plain, permanent, human-typeable URL. If that
+// trade ever needs revisiting, `git log` this comment's commit for the
+// original token-based implementation to restore.
+const OBS_DEFAULT_PORT = 7893;
 let obsServer = null;
 let obsPort = null;
-let obsToken = null;
 let latestFrame = null;
 const obsClients = new Set();
 
-function obsPageHtml(token) {
+function obsPageHtml() {
   return "<!doctype html><html><head><meta charset=\"utf-8\">" +
   "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src 'self'\">" +
   "<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}img{width:100%;height:100%;object-fit:contain;display:block}</style>" +
-  `</head><body><img src="/stream.mjpeg?token=${encodeURIComponent(token)}" alt="" /></body></html>`;
-}
-
-function validObsToken(candidate) {
-  if (!obsToken || typeof candidate !== "string") return false;
-  const expected = Buffer.from(obsToken);
-  const actual = Buffer.from(candidate);
-  return expected.length === actual.length && timingSafeEqual(expected, actual);
-}
-
-function obsTokenPath() {
-  return path.join(app.getPath("userData"), "obs-token.txt");
-}
-
-// Persisted, not regenerated per launch. A fresh random token every launch
-// meant any URL saved into an OBS Browser Source went stale (401) the
-// moment Miko restarted — there was no way to "set it once" in OBS. This
-// token only guards the local relay (loopback-bound, plus this token, so an
-// arbitrary website open in a normal browser tab can't quietly read the
-// live swap feed off localhost) — it isn't a credential like the fal key,
-// so a plain file is fine, no safeStorage encryption needed.
-async function loadOrCreateObsToken() {
-  try {
-    const existing = (await readFile(obsTokenPath(), "utf8")).trim();
-    if (existing.length >= 16) return existing;
-  } catch (error) {
-    if (error.code !== "ENOENT") console.error("Unable to read saved OBS token", error);
-  }
-  const fresh = randomBytes(24).toString("base64url");
-  try {
-    await mkdir(path.dirname(obsTokenPath()), { recursive: true });
-    await writeFile(obsTokenPath(), fresh, "utf8");
-  } catch (error) {
-    console.error("Unable to persist OBS token — it will not survive a restart", error);
-  }
-  return fresh;
+  "</head><body><img src=\"/stream.mjpeg\" alt=\"\" /></body></html>";
 }
 
 // PNG frames, not JPEG, over the same multipart/x-mixed-replace transport —
@@ -99,9 +68,8 @@ function writeMjpegFrame(res, buffer) {
 
 async function startObsServer(port) {
   if (obsServer) {
-    return { port: obsPort, token: obsToken };
+    return { port: obsPort };
   }
-  const token = await loadOrCreateObsToken();
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       const expectedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
@@ -111,11 +79,6 @@ async function startObsServer(port) {
         return;
       }
       const requestUrl = new URL(req.url || "/", `http://${req.headers.host}`);
-      if (!validObsToken(requestUrl.searchParams.get("token"))) {
-        res.writeHead(401, { "Cache-Control": "no-store" });
-        res.end("Unauthorized");
-        return;
-      }
       if (requestUrl.pathname === "/stream.mjpeg") {
         res.writeHead(200, {
           "Content-Type": "multipart/x-mixed-replace; boundary=frame",
@@ -127,7 +90,7 @@ async function startObsServer(port) {
         req.on("close", () => obsClients.delete(res));
       } else if (requestUrl.pathname === "/" || requestUrl.pathname === "/index.html") {
         res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
-        res.end(obsPageHtml(token));
+        res.end(obsPageHtml());
       } else {
         res.writeHead(404);
         res.end();
@@ -136,14 +99,12 @@ async function startObsServer(port) {
     server.once("error", (err) => {
       obsServer = null;
       obsPort = null;
-      obsToken = null;
       reject(err);
     });
     server.listen(port, "127.0.0.1", () => {
       obsServer = server;
       obsPort = port;
-      obsToken = token;
-      resolve({ port, token });
+      resolve({ port });
     });
   });
 }
@@ -155,7 +116,6 @@ async function stopObsServer() {
   await new Promise((resolve) => obsServer.close(resolve));
   obsServer = null;
   obsPort = null;
-  obsToken = null;
   latestFrame = null;
 }
 
@@ -176,7 +136,11 @@ function sanitizeSettings(value) {
     // defaults to Decart's own recommended on, not off.
     enablePromptExpansion: source.enablePromptExpansion === undefined ? true : Boolean(source.enablePromptExpansion),
     cameraId: String(source.cameraId || "").slice(0, 500),
-    theme: source.theme === "light" ? "light" : "dark"
+    theme: source.theme === "light" ? "light" : "dark",
+    // Restored on launch so the relay auto-starts if it was on last time —
+    // see app.js's init(). The URL it's served at no longer changes (no
+    // token, fixed port), so there's nothing stale to worry about.
+    obsEnabled: Boolean(source.obsEnabled)
   };
 }
 
@@ -689,9 +653,9 @@ ipcMain.handle("obs:start", async (event, requestedPort) => {
   if (!isTrustedSender(event)) throw new Error("Untrusted request.");
   const port = Number(requestedPort) || OBS_DEFAULT_PORT;
   try {
-    const { port: boundPort, token } = await startObsServer(port);
+    const { port: boundPort } = await startObsServer(port);
     logAppEvent("info", `OBS output started on localhost port ${boundPort}`);
-    return { url: `http://127.0.0.1:${boundPort}/?token=${encodeURIComponent(token)}` };
+    return { url: `http://127.0.0.1:${boundPort}/` };
   } catch (err) {
     throw new Error(
       err.code === "EADDRINUSE"
@@ -710,7 +674,7 @@ ipcMain.handle("obs:stop", async (event) => {
 ipcMain.handle("obs:status", (event) => {
   if (!isTrustedSender(event)) return { running: false };
   return obsServer
-    ? { running: true, url: `http://127.0.0.1:${obsPort}/?token=${encodeURIComponent(obsToken)}` }
+    ? { running: true, url: `http://127.0.0.1:${obsPort}/` }
     : { running: false };
 });
 
