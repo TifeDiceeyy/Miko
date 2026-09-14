@@ -127,6 +127,19 @@
             <div class="source-controls">
               <label for="cameraSelect">Camera source</label>
               <div class="field-with-action"><select id="cameraSelect"><option value="">Detecting cameras…</option></select><button id="refreshCameras" class="field-action" type="button" aria-label="Refresh camera list" title="Refresh cameras">↻</button></div>
+
+              <label for="modelSelect">Model</label>
+              <select id="modelSelect">
+                <option value="decart/lucy-2-5/realtime">Miko Pro</option>
+                <option value="decart/lucy2-vton/realtime">Miko Lite</option>
+              </select>
+              <p id="modelRunway" class="field-hint" hidden></p>
+
+              <label for="taskSelect">Task</label>
+              <select id="taskSelect">
+                <option value="character">Full character swap</option>
+                <option value="outfit">Outfit only</option>
+              </select>
             </div>
 
             <div class="faceswap-controls">
@@ -142,7 +155,8 @@
               <h3>Session facts</h3>
               <dl>
                 <div><dt>Latency</dt><dd>Realtime (WebRTC)</dd></div>
-                <div><dt>Mode</dt><dd id="modeFact">Character Swap</dd></div>
+                <div><dt>Model</dt><dd id="modeFact">Miko Pro · Full character swap</dd></div>
+                <div><dt>Rate</dt><dd id="rateFact">—</dd></div>
                 <div><dt>Network</dt><dd id="networkFact">—</dd></div>
                 <div><dt>Resolution</dt><dd id="resolutionFact">1024 × 1024</dd></div>
                 <div><dt>Local recording</dt><dd>Off</dd></div>
@@ -167,13 +181,6 @@
     <aside id="settingsPanel" class="settings-panel" aria-labelledby="settingsHeading">
       <header class="settings-header"><div><h2 id="settingsHeading">Model settings</h2><p>Saved locally on this device.</p></div><button id="closeSettings" class="icon-btn close-settings" type="button" aria-label="Close settings"><svg><use href="#i-close" /></svg></button></header>
       <div class="settings-scroll">
-        <label for="modeSelect">Mode</label>
-        <select id="modeSelect">
-          <option value="decart/lucy-2-5/realtime">Character Swap</option>
-          <option value="decart/lucy2-vton/realtime">Virtual Try-on</option>
-        </select>
-        <p class="field-hint">Switching mode while live stops the current session first.</p>
-
         <label for="resolutionSelect">Resolution ceiling</label>
         <select id="resolutionSelect">
           <option value="1024">1024px (best fidelity)</option>
@@ -223,6 +230,7 @@
   <div id="srStatus" class="sr-only" aria-live="polite"></div>
   <script src="lib/billing-policy.js"></script>
   <script src="lib/reference-policy.js"></script>
+  <script src="lib/session-presets.js"></script>
   <script src="dist/lucy-session.bundle.js"></script>
   <script src="app.js"></script>
 </body>

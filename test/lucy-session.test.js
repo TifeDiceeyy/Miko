@@ -87,8 +87,11 @@ function installFalMock() {
   let connectCalls = 0;
   let closed = false;
   let options;
-  fal.realtime.connect = (_endpoint, suppliedOptions) => {
+  let endpoint;
+  const sent = [];
+  fal.realtime.connect = (suppliedEndpoint, suppliedOptions) => {
     connectCalls += 1;
+    endpoint = suppliedEndpoint;
     options = suppliedOptions;
     queueMicrotask(async () => {
       await options.tokenProvider("decart/lucy-2-5/realtime");
@@ -96,6 +99,7 @@ function installFalMock() {
     });
     return {
       send(message) {
+        sent.push(message);
         if (message.type !== "offer") return;
         queueMicrotask(async () => {
           await options.onResult({ type: "answer", sdp: "mock-answer" });
@@ -109,6 +113,8 @@ function installFalMock() {
     get connectCalls() { return connectCalls; },
     get closed() { return closed; },
     get options() { return options; },
+    get endpoint() { return endpoint; },
+    get sent() { return sent; },
     restore() { fal.realtime.connect = originalConnect; }
   };
 }
@@ -195,6 +201,25 @@ test("network loss uses interval deltas and poor quality never reconnects", asyn
   assert.equal(session.getSnapshot().networkQuality, "poor");
   assert.equal(realtime.connectCalls, 1);
   assert.equal(session.getSnapshot().localStream.getVideoTracks()[0].constraints.length, 1);
+
+  session.hardStop();
+  realtime.restore();
+});
+
+test("Lite receives the full character-swap prompt and reference unchanged", async () => {
+  installBrowserMocks();
+  const realtime = installFalMock();
+  const presets = require("../lib/session-presets");
+  const session = new LucyRealtimeSession(presets.MODELS.lite);
+  session.setConnectGuard(async () => {});
+  session.updateEditParams({ prompt: presets.DEFAULT_PROMPTS.character, referenceImageUrl: "data:image/jpeg;base64,AAAA" });
+
+  await session.connect();
+  assert.equal(realtime.endpoint, "decart/lucy2-vton/realtime");
+  const firstMessage = realtime.sent[0];
+  assert.equal(firstMessage.prompt, presets.DEFAULT_PROMPTS.character);
+  assert.equal(firstMessage.reference_image_url, "data:image/jpeg;base64,AAAA");
+  assert.equal(session.getSnapshot().state, "live");
 
   session.hardStop();
   realtime.restore();

@@ -12,24 +12,15 @@ const appRootUrl = pathToFileURL(`${__dirname}${path.sep}`).toString();
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
 
-// Kept in sync with lib/lucy-config.ts (that file can't be required directly
-// from plain CommonJS main.js, so these two constants are duplicated here).
+// Model endpoints and default prompts live in lib/session-presets.js, shared
+// with the renderer so the two copies can't drift. Must stay in sync with
+// REALTIME_ENDPOINTS in lib/lucy-config.ts (a TS file main.js can't require).
+const presets = require("./lib/session-presets");
 const REALTIME_ENDPOINTS = {
-  characterSwap: "decart/lucy-2-5/realtime",
-  virtualTryOn: "decart/lucy2-vton/realtime"
+  characterSwap: presets.MODELS.pro,
+  virtualTryOn: presets.MODELS.lite
 };
 const TOKEN_DURATION_SECONDS = 120;
-
-// Permanent default for a fresh install (no settings.json yet) — the exact
-// fidelity-focused phrasing the master prompt itself recommended for
-// keeping swaps literal to the reference rather than drifting. Once the
-// user saves their own prompt (even an empty one), this no longer applies.
-const DEFAULT_PROMPTS = {
-  [REALTIME_ENDPOINTS.characterSwap]:
-    "Replace the entire person in the live camera feed with the exact person or character shown in the reference image, including their face, facial features, hair, skin tone, body appearance, clothing, colors, materials, and silhouette. Keep the same identity and character design stable and consistent across every frame. Preserve the live person's pose, expression, hand motion, camera angle, lighting, and background. Do not invent, blend, or morph facial features, clothing, or identity.",
-  [REALTIME_ENDPOINTS.virtualTryOn]:
-    "Dress the person in the live camera feed in the exact garment shown in the reference image, matching its color, material, pattern, fit, and details. Keep the person's face, identity, pose, body shape, and background unchanged."
-};
 
 function isTrustedSender(event) {
   const senderUrl = event.senderFrame?.url || "";
@@ -136,7 +127,7 @@ async function stopObsServer() {
 function sanitizeSettings(value) {
   const source = value && typeof value === "object" ? value : {};
   return {
-    mode: Object.values(REALTIME_ENDPOINTS).includes(source.mode) ? source.mode : REALTIME_ENDPOINTS.characterSwap,
+    ...presets.resolveSelection(source),
     resolution: [512, 768, 1024].includes(Number(source.resolution)) ? Number(source.resolution) : 1024,
     prompt: String(source.prompt || "").slice(0, 2000),
     enablePromptExpansion: Boolean(source.enablePromptExpansion),
@@ -371,7 +362,7 @@ ipcMain.handle("settings:load", async (event) => {
     return sanitizeSettings(JSON.parse(json));
   } catch (error) {
     if (error.code !== "ENOENT") console.error("Unable to load settings", error);
-    return sanitizeSettings({ prompt: DEFAULT_PROMPTS[REALTIME_ENDPOINTS.characterSwap] });
+    return sanitizeSettings({ prompt: presets.DEFAULT_PROMPTS.character });
   }
 });
 

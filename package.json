@@ -11,7 +11,7 @@
     "start": "npm run build && electron .",
     "dev": "npm run build && electron . --dev",
     "typecheck": "tsc --noEmit",
-    "check": "node --check main.js && node --check preload.js && node --check app.js && node --check lib/billing-policy.js && node --check lib/reference-policy.js",
+    "check": "node --check main.js && node --check preload.js && node --check app.js && node --check lib/billing-policy.js && node --check lib/reference-policy.js && node --check lib/session-presets.js",
     "test": "node --test test/*.test.js",
     "pack": "electron-builder --dir",
     "dist": "npm run build && electron-builder",
@@ -19,7 +19,7 @@
     "dist:win": "npm run build && electron-builder --win nsis --x64"
   },
   "dependencies": {
-    "@fal-ai/client": "^1.10.1"
+    "@fal-ai/client": "1.10.1"
   },
   "devDependencies": {
     "electron": "38.8.6",
@@ -42,6 +42,7 @@
       "app.js",
       "lib/billing-policy.js",
       "lib/reference-policy.js",
+      "lib/session-presets.js",
       "dist/**/*",
       "README.md",
       "PRODUCT.md"

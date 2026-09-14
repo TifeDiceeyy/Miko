@@ -303,7 +303,8 @@ html[data-platform="darwin"] .window-controls { display: none; }
 .faceswap-controls label,
 .settings-scroll > label,
 .dialog-body > label { display: block; margin: 0 0 7px; color: var(--text-soft); font-size: 10px; font-weight: 700; }
-.faceswap-controls label:not(:first-child) { margin-top: 13px; }
+.faceswap-controls label:not(:first-child),
+.source-controls label:not(:first-child) { margin-top: 13px; }
 .source-option { position: relative; min-height: 46px; display: grid; grid-template-columns: 28px 1fr auto; align-items: center; gap: 8px; margin-top: 5px; padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer; }
 .source-option:hover { background: var(--surface-hover); }
 .source-option.selected { background: var(--accent-soft); }

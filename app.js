@@ -2,11 +2,12 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
 const bridge = window.deepLiveCam;
-const { getSession, REALTIME_ENDPOINTS, RESOLUTION_STEPS, MIN_REFERENCE_IMAGE_DIMENSION } = window.LucySession;
+const { getSession, RESOLUTION_STEPS, MIN_REFERENCE_IMAGE_DIMENSION } = window.LucySession;
 const billing = window.MikoBillingPolicy;
 const { MIN_BALANCE_USD } = billing;
 const billingMeter = new billing.BillingMeter({ storage: window.localStorage });
 const referencePolicy = window.MikoReferencePolicy;
+const presets = window.MikoSessionPresets;
 
 const STATE_LABELS = {
   idle: "Idle",
@@ -14,13 +15,6 @@ const STATE_LABELS = {
   live: "Live",
   reconnecting: "Reconnecting…",
   error: "Error"
-};
-
-const DEFAULT_PROMPTS = {
-  [REALTIME_ENDPOINTS.characterSwap]:
-    "Replace the entire person in the live camera feed with the exact person or character shown in the reference image, including their face, facial features, hair, skin tone, body appearance, clothing, colors, materials, and silhouette. Keep the same identity and character design stable and consistent across every frame. Preserve the live person's pose, expression, hand motion, camera angle, lighting, and background. Do not invent, blend, or morph facial features, clothing, or identity.",
-  [REALTIME_ENDPOINTS.virtualTryOn]:
-    "Dress the person in the live camera feed in the exact garment shown in the reference image, matching its color, material, pattern, fit, and details. Keep the person's face, identity, pose, body shape, and background unchanged."
 };
 
 const elements = {
@@ -60,10 +54,13 @@ const elements = {
   fileName: $("#fileName"),
   refWarning: $("#refWarning"),
   promptInput: $("#promptInput"),
-  modeSelect: $("#modeSelect"),
+  modelSelect: $("#modelSelect"),
+  taskSelect: $("#taskSelect"),
+  modelRunway: $("#modelRunway"),
   resolutionSelect: $("#resolutionSelect"),
   promptExpansion: $("#promptExpansion"),
   modeFact: $("#modeFact"),
+  rateFact: $("#rateFact"),
   networkFact: $("#networkFact"),
   resolutionFact: $("#resolutionFact"),
   networkMeter: $("#networkMeter"),
@@ -107,7 +104,9 @@ const state = {
   balanceVisible: false,
   lastLoggedState: "idle",
   lastSessionActive: false,
-  currentMode: REALTIME_ENDPOINTS.characterSwap,
+  currentTask: "character",
+  sessionRecord: null,
+  pendingEndReason: null,
   cameraAccessError: null
 };
 
@@ -155,10 +154,26 @@ function currentEditParams() {
   };
 }
 
+function selectedModel() {
+  return elements.modelSelect.value;
+}
+
+function selectedTask() {
+  return elements.taskSelect.value;
+}
+
+function modelName(model = selectedModel()) {
+  return presets.MODEL_NAMES[model] || "Miko";
+}
+
+function formatRate(model = selectedModel()) {
+  return `$${billing.rateForEndpoint(model).toFixed(2)}/s`;
+}
+
 function referenceRequirementText() {
-  return elements.modeSelect.value === REALTIME_ENDPOINTS.virtualTryOn
-    ? "Choose a reference image before starting — Virtual Try-on needs a photo of the garment."
-    : "Choose a reference image before starting — Character Swap needs a photo of the person or character.";
+  return selectedTask() === "outfit"
+    ? "Choose a reference image before starting — Outfit only needs a photo of the garment."
+    : "Choose a reference image before starting — Full character swap needs a photo of the person or character.";
 }
 
 function attachSession(mode) {
@@ -275,7 +290,8 @@ function render() {
       ? `Balance too low to start a session (more than $${MIN_BALANCE_USD.toFixed(2)} required).`
       : "";
   elements.stopBtn.disabled = snap.state === "idle";
-  elements.modeSelect.disabled = isLive || isBusy;
+  elements.modelSelect.disabled = isLive || isBusy;
+  elements.taskSelect.disabled = isLive || isBusy;
   elements.resolutionSelect.disabled = isLive || isBusy;
   elements.cameraSelect.disabled = isLive || isBusy;
   $("span", elements.startBtn).textContent = isBusy ? "Connecting…" : isLive ? "Live" : "Start Live";
@@ -295,9 +311,20 @@ function render() {
   }
 
   const sessionActive = isLive || isBusy;
-  if (sessionActive && !state.lastSessionActive && elements.obsToggle.checked) startObsFrameLoop();
-  if (!sessionActive && state.lastSessionActive) clearTransientSessionMedia();
-  state.lastSessionActive = sessionActive;
+  if (sessionActive && !state.lastSessionActive) {
+    state.lastSessionActive = true;
+    if (!state.sessionRecord) {
+      state.sessionRecord = { model: selectedModel(), seconds: 0 };
+      state.pendingEndReason = null;
+    }
+    if (elements.obsToggle.checked) startObsFrameLoop();
+  } else if (!sessionActive && state.lastSessionActive) {
+    state.lastSessionActive = false;
+    // An automatic reconnect passes through "error" and straight back into
+    // "reconnecting" in the same call stack. Only end the session if it is
+    // still inactive once that settles.
+    queueMicrotask(finishSessionIfInactive);
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -430,7 +457,8 @@ async function chooseReferenceImage() {
 
 function collectSettings() {
   return {
-    mode: elements.modeSelect.value,
+    model: selectedModel(),
+    task: selectedTask(),
     resolution: Number(elements.resolutionSelect.value),
     prompt: elements.promptInput.value,
     enablePromptExpansion: elements.promptExpansion.checked,
@@ -441,13 +469,41 @@ function collectSettings() {
 
 function applySettings(settings) {
   if (!settings) return;
-  elements.modeSelect.value = settings.mode || REALTIME_ENDPOINTS.characterSwap;
-  state.currentMode = elements.modeSelect.value;
+  const selection = presets.resolveSelection(settings);
+  elements.modelSelect.value = selection.model;
+  elements.taskSelect.value = selection.task;
+  state.currentTask = selection.task;
   elements.resolutionSelect.value = String(settings.resolution || 1024);
   elements.promptInput.value = settings.prompt || "";
   elements.promptExpansion.checked = Boolean(settings.enablePromptExpansion);
   applyTheme(settings.theme || "dark", false);
-  updateModeCopy();
+  updateSelectionCopy();
+}
+
+function labelModelOptions() {
+  for (const option of elements.modelSelect.options) {
+    option.textContent = `${modelName(option.value)} — ${formatRate(option.value)}`;
+  }
+}
+
+function updateSelectionCopy() {
+  const label = `${modelName()} · ${presets.TASK_LABELS[selectedTask()]}`;
+  elements.modeSummary.textContent = label;
+  elements.modeFact.textContent = label;
+  elements.rateFact.textContent = formatRate();
+  renderModelRunway();
+}
+
+// The runway reveals roughly how much balance is left, so it follows the
+// balance eye-toggle like the balance itself.
+function renderModelRunway() {
+  const remaining = billingMeter.remainingSeconds(selectedModel());
+  elements.modelRunway.hidden = remaining == null || !state.balanceVisible;
+  if (elements.modelRunway.hidden) return;
+  elements.modelRunway.className = `field-hint ${remaining > 0 ? "" : "danger"}`.trim();
+  elements.modelRunway.textContent = remaining > 0
+    ? `~${formatLiveDuration(remaining * 1000)} of live time at ${formatRate()} before the $${MIN_BALANCE_USD.toFixed(2)} floor.`
+    : `At the $${MIN_BALANCE_USD.toFixed(2)} floor — top up to start.`;
 }
 
 async function saveSettings() {
@@ -465,13 +521,6 @@ function applyTheme(theme, notify = true) {
   elements.html.dataset.theme = value;
   elements.themeToggle.setAttribute("aria-label", value === "dark" ? "Switch to light theme" : "Switch to dark theme");
   if (notify) toast(`${value === "dark" ? "Dark" : "Light"} theme enabled`);
-}
-
-function updateModeCopy() {
-  const isVton = elements.modeSelect.value === REALTIME_ENDPOINTS.virtualTryOn;
-  const label = isVton ? "Virtual Try-on" : "Character Swap";
-  elements.modeSummary.textContent = label;
-  elements.modeFact.textContent = label;
 }
 
 // ---------------------------------------------------------------------
@@ -496,6 +545,7 @@ async function refreshKeyStatus() {
 let lastBalanceWarningShown = false;
 
 function renderBalance() {
+  renderModelRunway();
   const result = state.balance;
   const hasBalance = result && typeof result.balance === "number";
   elements.balanceSummary.hidden = !hasBalance;
@@ -516,8 +566,8 @@ function renderBalance() {
   elements.balanceVisibilityToggle.title = state.balanceVisible ? "Hide balance" : "Show balance";
   elements.balanceVisibilityIcon.setAttribute("href", state.balanceVisible ? "#i-eye-off" : "#i-eye");
 
-  const remainingSeconds = billingMeter.remainingSeconds(elements.modeSelect.value)
-    ?? Math.floor(billing.secondsUntilFloor(effectiveBalance, elements.modeSelect.value));
+  const remainingSeconds = billingMeter.remainingSeconds(selectedModel())
+    ?? Math.floor(billing.secondsUntilFloor(effectiveBalance, selectedModel()));
   const hintDetail = isBlocked
     ? `below the $${MIN_BALANCE_USD.toFixed(2)} minimum — top up to start a new session`
     : isLow
@@ -546,7 +596,7 @@ async function refreshBalance({ notifyIfLow = false } = {}) {
   state.balance = result;
   billingMeter.observeBalance(result.balance);
   const formatted = `${result.balance.toFixed(2)} ${result.currency}`;
-  const isBlocked = (billingMeter.remainingSeconds(elements.modeSelect.value) ?? 0) <= 0;
+  const isBlocked = (billingMeter.remainingSeconds(selectedModel()) ?? 0) <= 0;
   const isLow = !isBlocked && result.balance < MIN_BALANCE_USD * 2;
   state.balanceBlocksStart = isBlocked;
   renderBalance();
@@ -572,7 +622,7 @@ async function gateSessionStart({ isReconnect }) {
   session.updateEditParams(currentEditParams());
 
   if (isReconnect && billingMeter.effectiveBalance() != null) {
-    if ((billingMeter.remainingSeconds(elements.modeSelect.value) ?? 0) <= 0) {
+    if ((billingMeter.remainingSeconds(selectedModel()) ?? 0) <= 0) {
       throw new Error(`Balance is at or below the $${MIN_BALANCE_USD.toFixed(2)} safety floor.`);
     }
     startBillingGuard();
@@ -590,7 +640,7 @@ async function gateSessionStart({ isReconnect }) {
   }
 
   billingMeter.observeBalance(result.balance);
-  if ((billingMeter.remainingSeconds(elements.modeSelect.value) ?? 0) <= 0) {
+  if ((billingMeter.remainingSeconds(selectedModel()) ?? 0) <= 0) {
     state.balance = result;
     state.balanceBlocksStart = true;
     renderBalance();
@@ -682,7 +732,7 @@ function startLiveTimer() {
   elements.liveTimer.textContent = "00:00";
   liveTimerInterval = window.setInterval(() => {
     const elapsed = formatLiveDuration(Date.now() - liveStartedAt);
-    const remaining = billingMeter.remainingSeconds(elements.modeSelect.value);
+    const remaining = billingMeter.remainingSeconds(selectedModel());
     elements.liveTimer.textContent = remaining == null
       ? elapsed
       : `${elapsed} · ${formatLiveDuration(remaining * 1000)} left`;
@@ -715,7 +765,7 @@ function stopForBalance(result) {
   const formatted = result && typeof result.balance === "number"
     ? `${result.balance.toFixed(2)} ${result.currency}`
     : `$${MIN_BALANCE_USD.toFixed(2)} safety floor`;
-  addActivity(`Auto-disconnected: available balance reached ${formatted}`);
+  state.pendingEndReason = `Auto-disconnected at the balance safety floor (${formatted})`;
   toast(`Disconnected — balance safety floor reached (${formatted})`);
   stopBillingGuard();
   clearTransientSessionMedia();
@@ -726,8 +776,10 @@ function stopForBalance(result) {
 function recordBillingTick(now = Date.now()) {
   const snap = session?.getSnapshot();
   if (lastBillingTickAt != null && ["connecting", "live", "reconnecting"].includes(snap?.state)) {
-    billingMeter.recordSpend((now - lastBillingTickAt) / 1000, elements.modeSelect.value);
-    state.balanceBlocksStart = (billingMeter.remainingSeconds(elements.modeSelect.value) ?? 0) <= 0;
+    const seconds = (now - lastBillingTickAt) / 1000;
+    billingMeter.recordSpend(seconds, selectedModel());
+    if (state.sessionRecord) state.sessionRecord.seconds += seconds;
+    state.balanceBlocksStart = (billingMeter.remainingSeconds(selectedModel()) ?? 0) <= 0;
     renderBalance();
   }
   lastBillingTickAt = now;
@@ -747,7 +799,7 @@ function startBillingGuard() {
     if (!result || typeof result.balance !== "number") return;
     billingMeter.observeBalance(result.balance);
     state.balance = result;
-    state.balanceBlocksStart = (billingMeter.remainingSeconds(elements.modeSelect.value) ?? 0) <= 0;
+    state.balanceBlocksStart = (billingMeter.remainingSeconds(selectedModel()) ?? 0) <= 0;
     renderBalance();
     if (state.balanceBlocksStart) stopForBalance(result);
   }, LIVE_BALANCE_POLL_MS);
@@ -808,6 +860,28 @@ function clearActivityForNewSession() {
   elements.activityCount.textContent = "1 event";
 }
 
+// After a call, keep no per-call timeline (privacy) — just one line saying
+// why it ended and, for a session that actually ran, what it cost.
+function finishSessionIfInactive() {
+  const snap = session?.getSnapshot();
+  if (!snap || ["connecting", "live", "reconnecting"].includes(snap.state)) return;
+  stopBillingGuard();
+  clearTransientSessionMedia();
+  const record = state.sessionRecord;
+  const reason = snap.state === "error" && snap.error
+    ? `Error: ${snap.error}`
+    : state.pendingEndReason || "Session stopped";
+  state.sessionRecord = null;
+  state.pendingEndReason = null;
+  const seconds = record?.seconds || 0;
+  const summary = seconds >= 1
+    ? `Session ended — ${modelName(record.model)}, ${formatLiveDuration(seconds * 1000)}, est. $${(seconds * billing.rateForEndpoint(record.model)).toFixed(2)} · ${reason}`
+    : reason;
+  elements.activityLog.replaceChildren();
+  state.activityCount = 0;
+  addActivity(summary);
+}
+
 async function toggleObsOutput() {
   if (elements.obsToggle.checked) {
     try {
@@ -836,7 +910,7 @@ async function toggleObsOutput() {
 
 function openSettings() {
   elements.settingsPanel.classList.add("is-open");
-  window.setTimeout(() => elements.modeSelect.focus(), 210);
+  window.setTimeout(() => elements.resolutionSelect.focus(), 210);
 }
 
 async function requestSessionStart() {
@@ -854,6 +928,7 @@ async function requestSessionStart() {
 function bindEvents() {
   elements.startBtn.addEventListener("click", requestSessionStart);
   elements.stopBtn.addEventListener("click", () => {
+    state.pendingEndReason = "Stopped by you";
     stopBillingGuard();
     clearTransientSessionMedia();
     session.disconnect();
@@ -887,16 +962,27 @@ function bindEvents() {
     session.updateEditParams(currentEditParams());
   });
 
-  elements.modeSelect.addEventListener("change", () => {
+  elements.modelSelect.addEventListener("change", () => {
     stopBillingGuard();
     clearTransientSessionMedia();
-    const nextMode = elements.modeSelect.value;
-    if (elements.promptInput.value === DEFAULT_PROMPTS[state.currentMode]) {
-      elements.promptInput.value = DEFAULT_PROMPTS[nextMode];
+    updateSelectionCopy();
+    attachSession(selectedModel());
+    if (billingMeter.effectiveBalance() != null) {
+      state.balanceBlocksStart = (billingMeter.remainingSeconds(selectedModel()) ?? 0) <= 0;
+      renderBalance();
+      render();
     }
-    state.currentMode = nextMode;
-    updateModeCopy();
-    attachSession(elements.modeSelect.value);
+  });
+  elements.taskSelect.addEventListener("change", () => {
+    const nextTask = selectedTask();
+    const nextPrompt = presets.promptAfterTaskChange(elements.promptInput.value, state.currentTask, nextTask);
+    if (nextPrompt !== elements.promptInput.value) {
+      elements.promptInput.value = nextPrompt;
+      session.updateEditParams(currentEditParams());
+    }
+    state.currentTask = nextTask;
+    updateSelectionCopy();
+    render();
   });
   elements.resolutionSelect.addEventListener("change", () => session.setPreferredResolution(Number(elements.resolutionSelect.value)));
 
@@ -953,11 +1039,12 @@ function bindEvents() {
   $$("[data-window-action]").forEach((button) => button.addEventListener("click", () => bridge.windowControl(button.dataset.windowAction)));
   navigator.mediaDevices?.addEventListener?.("devicechange", () => refreshCameras());
   bridge.onSystemSuspend((reason) => {
+    const wasActive = state.lastSessionActive;
+    state.pendingEndReason = wasActive ? `Stopped because the system ${reason}` : null;
     stopBillingGuard();
     clearTransientSessionMedia();
     session?.hardStop();
-    addActivity(`Session stopped because the system ${reason}`);
-    toast(`Session stopped: system ${reason}`);
+    if (wasActive) toast(`Session stopped: system ${reason}`);
   });
 }
 
@@ -973,10 +1060,12 @@ async function init() {
     elements.appVersion.textContent = `v${info.version}`;
     elements.platformInfo.textContent = `${info.platform} · ${info.architecture}`;
   }
+  labelModelOptions();
   applySettings(settings);
+  updateSelectionCopy();
   if (settings?.cameraId) elements.cameraSelect.value = settings.cameraId;
 
-  attachSession(settings?.mode || REALTIME_ENDPOINTS.characterSwap);
+  attachSession(selectedModel());
   await refreshKeyStatus();
   void refreshBalance({ notifyIfLow: true });
 
