@@ -604,11 +604,12 @@ async function refreshBalance({ notifyIfLow = false } = {}) {
 
   if (notifyIfLow && (isBlocked || isLow) && !lastBalanceWarningShown) {
     lastBalanceWarningShown = true;
-    toast(isBlocked ? `Balance too low to start a session (${formatted})` : `Balance running low (${formatted})`);
+    const amount = state.balanceVisible ? ` (${formatted})` : "";
+    toast(isBlocked ? `Balance too low to start a session${amount}` : `Balance running low${amount}`);
     addActivity(
       isBlocked
-        ? `Balance is ${formatted} — at or below the $${MIN_BALANCE_USD.toFixed(2)} minimum, new sessions are blocked until topped up`
-        : `Balance is low: ${formatted}`
+        ? `Balance${amount} is at or below the $${MIN_BALANCE_USD.toFixed(2)} minimum — new sessions are blocked until topped up`
+        : `Balance is low${amount}`
     );
   } else if (!isBlocked && !isLow) {
     lastBalanceWarningShown = false;
@@ -733,7 +734,8 @@ function startLiveTimer() {
   liveTimerInterval = window.setInterval(() => {
     const elapsed = formatLiveDuration(Date.now() - liveStartedAt);
     const remaining = billingMeter.remainingSeconds(selectedModel());
-    elements.liveTimer.textContent = remaining == null
+    // Time left reveals roughly the balance, so it follows the eye toggle.
+    elements.liveTimer.textContent = remaining == null || !state.balanceVisible
       ? elapsed
       : `${elapsed} · ${formatLiveDuration(remaining * 1000)} left`;
   }, 1000);
@@ -762,11 +764,11 @@ let lastBillingTickAt = null;
 function stopForBalance(result) {
   if (balanceDisconnectInProgress) return;
   balanceDisconnectInProgress = true;
-  const formatted = result && typeof result.balance === "number"
-    ? `${result.balance.toFixed(2)} ${result.currency}`
-    : `$${MIN_BALANCE_USD.toFixed(2)} safety floor`;
-  state.pendingEndReason = `Auto-disconnected at the balance safety floor (${formatted})`;
-  toast(`Disconnected — balance safety floor reached (${formatted})`);
+  const amount = state.balanceVisible && result && typeof result.balance === "number"
+    ? ` (${result.balance.toFixed(2)} ${result.currency})`
+    : "";
+  state.pendingEndReason = `Auto-disconnected at the $${MIN_BALANCE_USD.toFixed(2)} balance safety floor${amount}`;
+  toast(`Disconnected — balance safety floor reached${amount}`);
   stopBillingGuard();
   clearTransientSessionMedia();
   session.disconnect();
