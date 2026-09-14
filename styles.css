@@ -334,6 +334,9 @@ input[type="password"]:focus { border-color: var(--focus); box-shadow: 0 0 0 2px
 .field-with-action { display: grid; grid-template-columns: minmax(0, 1fr) 34px; gap: 6px; }
 .field-action { border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg); color: var(--text-soft); cursor: pointer; }
 .field-action:hover { background: var(--surface-hover); color: var(--text); }
+.field-with-action.two-actions { grid-template-columns: minmax(0, 1fr) 34px auto; }
+.field-action.wide { padding: 0 10px; font-size: 10px; font-weight: 600; }
+.obs-panel .field-hint + label { margin-top: 12px; }
 .form-row { display: grid; grid-template-columns: 1.3fr .7fr; gap: 8px; margin-top: 11px; }
 .file-picker { width: 100%; min-height: 58px; display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 9px; padding: 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); text-align: left; cursor: pointer; }
 .file-picker:hover { background: var(--surface-hover); }

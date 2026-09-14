@@ -74,6 +74,9 @@ const elements = {
   obsPanel: $("#obsPanel"),
   obsUrlField: $("#obsUrlField"),
   copyObsUrl: $("#copyObsUrl"),
+  obsFileField: $("#obsFileField"),
+  copyObsFile: $("#copyObsFile"),
+  revealObsFile: $("#revealObsFile"),
   obsCanvas: $("#obsCanvas"),
   settingsPanel: $("#settingsPanel"),
   settingsToggle: $("#settingsToggle"),
@@ -686,20 +689,24 @@ async function gateSessionStart() {
 
 // ---------------------------------------------------------------------
 // OBS output — captures the Result video element to a hidden canvas and
-// streams it to the main process as JPEG frames, which serves them to
-// OBS's Browser Source over local HTTP (see main.js). No OBS plugin,
-// WebSocket, or virtual camera driver required.
+// streams it to the main process as PNG frames, which serves them to
+// OBS's Browser Source over local HTTP (see lib/obs-relay.js). No OBS
+// plugin, WebSocket, or virtual camera driver required.
 // ---------------------------------------------------------------------
 
 const OBS_TARGET_FPS = 15;
 let obsFrameTimer = null;
 let obsFrameEncoding = false;
 let obsEncodeSamples = [];
+// Bumped whenever the loop stops, so a frame still encoding then is dropped
+// instead of reaching OBS after the black end-of-call frame.
+let obsLoopGeneration = 0;
 
 function startObsFrameLoop() {
   if (obsFrameTimer) return;
   const canvas = elements.obsCanvas;
   const ctx = canvas.getContext("2d");
+  const generation = obsLoopGeneration;
   obsFrameTimer = window.setInterval(() => {
     if (obsFrameEncoding) return;
     const video = elements.resultVideo;
@@ -718,15 +725,22 @@ function startObsFrameLoop() {
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     canvas.toBlob(
       (blob) => {
-        obsFrameEncoding = false;
-        if (!blob) return;
+        if (!blob || generation !== obsLoopGeneration) {
+          if (generation === obsLoopGeneration) obsFrameEncoding = false;
+          return;
+        }
         obsEncodeSamples.push(performance.now() - startedAt);
         if (obsEncodeSamples.length === 150) {
           const averageMs = obsEncodeSamples.reduce((sum, value) => sum + value, 0) / obsEncodeSamples.length;
           bridge.logEvent("info", `OBS frame pipeline average ${averageMs.toFixed(1)}ms at ${OBS_TARGET_FPS}fps`);
           obsEncodeSamples = [];
         }
-        blob.arrayBuffer().then((buf) => bridge.obsSendFrame(buf));
+        // The next frame starts only after this one has reached the main
+        // process, so encodes can't pile up behind a slow one.
+        blob.arrayBuffer()
+          .then((buf) => { if (generation === obsLoopGeneration) bridge.obsSendFrame(buf); })
+          .catch(() => {})
+          .finally(() => { if (generation === obsLoopGeneration) obsFrameEncoding = false; });
       },
       "image/png"
     );
@@ -734,6 +748,7 @@ function startObsFrameLoop() {
 }
 
 function stopObsFrameLoop() {
+  obsLoopGeneration += 1;
   if (obsFrameTimer) {
     window.clearInterval(obsFrameTimer);
     obsFrameTimer = null;
@@ -923,12 +938,19 @@ function finishSessionIfInactive() {
 async function toggleObsOutput() {
   if (elements.obsToggle.checked) {
     try {
-      const { url } = await bridge.obsStart();
+      const { url, port, preferredPort, file } = await bridge.obsStart();
       elements.obsUrlField.value = url;
+      elements.obsFileField.value = file;
       elements.obsPanel.hidden = false;
       startObsFrameLoop();
-      addActivity("OBS output started");
-      toast("OBS output is live — add it as a Browser Source");
+      if (port !== preferredPort) {
+        // Another program, or a Windows port reservation, holds the usual port.
+        addActivity(`OBS output started on port ${port} because port ${preferredPort} is taken on this computer. Use the URL shown in Model settings in OBS.`);
+        toast(`Port ${preferredPort} is taken, so OBS output is on port ${port}. Update the URL in OBS.`);
+      } else {
+        addActivity("OBS output started");
+        toast("OBS output is live — add it as a Browser Source");
+      }
     } catch (error) {
       elements.obsToggle.checked = false;
       toast(error.message || "Could not start OBS output");
@@ -1116,7 +1138,13 @@ function bindEvents() {
   elements.topUpBalance.addEventListener("click", () => bridge.openExternal("https://fal.ai/dashboard/billing"));
   elements.openLogsFolder.addEventListener("click", () => bridge.openLogsFolder());
 
-  elements.obsToggle.addEventListener("change", toggleObsOutput);
+  elements.obsToggle.addEventListener("change", async () => {
+    // Remembered right away, so Miko sends to OBS at every launch until it's
+    // switched off. The choice is kept even if starting failed this time.
+    const wanted = elements.obsToggle.checked;
+    await toggleObsOutput();
+    bridge.setObsEnabled(wanted).catch((error) => console.warn("[obs] could not save the setting:", error?.message || error));
+  });
   elements.copyObsUrl.addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText(elements.obsUrlField.value);
@@ -1124,6 +1152,18 @@ function bindEvents() {
     } catch (error) {
       toast(`Could not copy URL: ${error?.message || error}`);
     }
+  });
+  elements.copyObsFile.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(elements.obsFileField.value);
+      toast("File path copied");
+    } catch (error) {
+      toast(`Could not copy the file path: ${error?.message || error}`);
+    }
+  });
+  elements.revealObsFile.addEventListener("click", async () => {
+    const problem = await bridge.obsRevealFile();
+    if (problem) toast(problem);
   });
   elements.sourceVideo.addEventListener("resize", render);
   elements.resultVideo.addEventListener("resize", render);

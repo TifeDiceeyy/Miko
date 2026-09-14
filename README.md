@@ -8,7 +8,64 @@ The accessible, restrained desktop UI here was designed independently
 resolution, and realtime signaling) lives in
 `lib/lucy-realtime-session.ts`.
 
-## Run
+## Install
+
+Download the installer for your computer from the latest release:
+https://github.com/TifeDiceeyy/Miko/releases/latest
+
+### macOS (Apple silicon and Intel)
+
+1. Download `Miko-<version>-mac-universal.dmg` (or the `.zip`).
+2. Open it and drag **Miko** into **Applications**.
+3. Open Miko. The app isn't notarized by Apple yet, so macOS may refuse
+   to open it the first time. If it does, run this once in Terminal, then
+   open Miko again:
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/Miko.app
+   ```
+4. Allow camera access when asked (or later in **System Settings →
+   Privacy & Security → Camera → Miko**).
+
+### Windows 10 and 11 (64-bit)
+
+1. Download `Miko-<version>-windows-x64.exe`.
+2. Run it. The installer isn't code-signed yet, so SmartScreen may show
+   "Windows protected your PC": click **More info → Run anyway**.
+3. If you have a Miko older than 1.1.0 installed, uninstall it from
+   **Settings → Apps**. 1.1.0 and later install as a separate app.
+4. Allow camera access when asked (or later in **Settings → Privacy &
+   security → Camera**, with "Let desktop apps access your camera" on).
+
+### First run (both)
+
+1. Open **Model settings → API key**, paste your fal.ai key (create one at
+   https://fal.ai/dashboard/keys) and press **Save key**. Miko then shows your
+   balance. The key is stored encrypted on this computer only. After
+   upgrading from a version older than 1.1.0 you need to enter it once
+   more.
+2. Choose a reference image, then press **Start Live**. Before each Start,
+   Miko checks your network for a VPN, a proxy or a blocked connection and
+   tells you what to turn off.
+3. For OBS, follow "OBS output setup" below. It's a one-time step.
+
+### Updating
+
+Install the new version over the old one (from 1.1.0 on, it upgrades in
+place). Your settings, API key and OBS setup stay as they are.
+
+### If something doesn't work
+
+Open **Model settings → API key → Open diagnostic logs** and look at
+`miko.log`:
+
+- **Start fails:** each attempt logs one line such as `Connected in 2.3s —
+  token 0.5s · service ready 1.6s · …` or `Connect failed after 10.0s — … ·
+  waiting on: answer (…)`, showing which step it got stuck on.
+- **OBS stays black:** look for `OBS is connected to Miko's output`. If
+  it's missing, check that the OBS source uses the OBS page file (below),
+  that **Send to OBS** is on, and that a session is live.
+
+## Run from source
 
 ```
 npm install
@@ -69,34 +126,42 @@ If something is likely to get in the way, Miko says what it found and lets
 the user turn it off and check again, or start anyway. It never changes
 network settings or stops other programs itself.
 
-## OBS output setup — do this once per install
+## OBS output setup — do this once
 
-Miko streams the swapped output to a local, token-protected HTTP relay
-(`http://127.0.0.1:<port>`, default port 5590, bound to loopback only) that
-OBS's built-in **Browser Source** can read directly — no OBS plugin,
-WebSocket, or virtual-cam driver required.
+Miko sends its swapped output to OBS's built-in **Browser Source** — no
+OBS plugin, WebSocket, or virtual-cam driver required. **Send to OBS** (in
+Miko's Model settings) is on by default and starts with Miko, so the
+output goes out whenever a session is live.
 
-1. In Miko, open **Settings → OBS** and toggle it on. The full URL
-   (including its access token) appears in that panel — copy it.
-2. In OBS, add a **Browser Source**, paste that URL in, and set its
-   **Width** and **Height** to match Miko's current resolution setting
-   (default **1280 × 720** — check the "Resolution ceiling" option in
-   Miko's settings if you've changed it). The page itself scales the
-   stream to fit whatever box OBS gives it (`object-fit: contain`, so the
-   full frame is always visible, never cropped or stretched), but OBS
-   still captures at the pixel size *you* set here — a smaller Browser
-   Source genuinely downscales a good stream, and this app can't override
-   that from the page.
+1. In Miko's **Model settings**, under **Send to OBS**, press **Show** next
+   to the OBS page file: `obs-output.html` in Miko's settings folder
+   (`~/Library/Application Support/Miko/` on macOS, `%APPDATA%\Miko\` on
+   Windows).
+2. In OBS, add a **Browser Source**, tick **Local file**, browse to that
+   file, and set **Width** to 1280 and **Height** to 720 (Miko's default
+   output size). The picture fits inside whatever size the source is —
+   black bars, never cropped or stretched — but OBS captures at the size
+   you set, so a smaller source really does lower the quality.
 
-**Do this once.** The relay's access token is generated on first use and
-persisted to `<userData>/obs-token.txt` — it survives every later launch,
-so the URL you paste into OBS keeps working indefinitely. You only need to
-redo this step after a fresh install, or if `<userData>` is ever wiped
-(uninstall/reinstall, manually deleting app data) — either regenerates the
-token, and the previously-saved OBS URL will start returning
-`401 Unauthorized` until you paste the new one in. If OBS ever shows a
-blank/black source unexpectedly, check Settings → OBS for a new URL before
-assuming anything else is wrong.
+That's the only setup. The page file always loads, even while Miko is
+closed: it shows black, finds Miko's output within a few seconds of Miko
+starting (whichever app you open first), goes black when a call ends or
+Miko closes, and reconnects by itself. Miko's log notes when OBS connects
+and disconnects.
+
+A plain URL source (`http://127.0.0.1:7893/`) also works and reconnects by
+itself once loaded, but if OBS opens before Miko it can't load the page at
+all and needs a right-click → **Refresh**. Sources set up before
+2026-09-14 point at the old `http://127.0.0.1:5590/?token=…` and need
+replacing.
+
+**Windows** works the same way. The output only accepts connections from
+this computer (`127.0.0.1`), so it isn't exposed to the network. If another
+program holds port 7893, or Windows has reserved it (Hyper-V, WSL and
+Docker can reserve blocks of ports), Miko uses the next free port up to
+7902 and says so; the OBS page file finds it by itself, while a URL source
+needs the new URL. OBS keeps its scenes in
+`%APPDATA%\obs-studio\basic\scenes`.
 
 ## Build
 

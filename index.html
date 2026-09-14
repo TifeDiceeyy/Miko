@@ -202,14 +202,21 @@
         <label class="switch-row"><span><b>Prompt expansion</b><small>Recommended on — the model rewrites your instruction to fit each frame, which is what keeps the swap stable instead of flickering.</small></span><input id="promptExpansion" type="checkbox" role="switch" checked /></label>
 
         <div class="settings-divider"></div>
-        <label class="switch-row"><span><b>Send to OBS</b><small>High-quality browser-source feed, no plugin needed.</small></span><input id="obsToggle" type="checkbox" role="switch" /></label>
+        <label class="switch-row"><span><b>Send to OBS</b><small>Sends the live swap to OBS automatically. No plugin needed.</small></span><input id="obsToggle" type="checkbox" role="switch" /></label>
         <div id="obsPanel" class="obs-panel" hidden>
-          <label for="obsUrlField">Browser Source URL</label>
+          <label for="obsFileField">OBS page file (recommended)</label>
+          <div class="field-with-action two-actions">
+            <input id="obsFileField" type="text" readonly />
+            <button id="copyObsFile" class="field-action" type="button" aria-label="Copy file path" title="Copy file path">⧉</button>
+            <button id="revealObsFile" class="field-action wide" type="button" title="Show the file in Finder or File Explorer">Show</button>
+          </div>
+          <p class="field-hint">In OBS: Add Source → Browser → tick Local file → Browse to this file, then set Width 1280 and Height 720. It connects by itself whenever Miko is sending, whichever app you open first.</p>
+          <label for="obsUrlField">Or use this URL</label>
           <div class="field-with-action">
             <input id="obsUrlField" type="text" readonly />
             <button id="copyObsUrl" class="field-action" type="button" aria-label="Copy URL" title="Copy URL">⧉</button>
           </div>
-          <p class="field-hint">In OBS: Add Source → Browser → paste this private URL. Streams live output at up to 15fps.</p>
+          <p class="field-hint">A URL source needs Refresh in OBS if OBS was opened before Miko. Either way the picture fits without cropping, up to 15 fps.</p>
         </div>
 
         <div class="settings-divider"></div>

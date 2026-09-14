@@ -26,9 +26,11 @@ declare global {
       getToken(app: string): Promise<string>;
       deleteRequestPayload(requestId: string): Promise<{ ok: boolean }>;
       openExternal(url: string): Promise<void>;
-      obsStart(port?: number): Promise<{ url: string }>;
+      obsStart(): Promise<{ url: string; port: number; preferredPort: number; file: string }>;
       obsStop(): Promise<void>;
-      obsStatus(): Promise<{ running: boolean; url?: string }>;
+      obsStatus(): Promise<{ running: boolean; url?: string; file?: string }>;
+      obsRevealFile(): Promise<string | null>;
+      setObsEnabled(enabled: boolean): Promise<void>;
       obsSendFrame(buffer: ArrayBuffer): void;
       obsClearFrame(): void;
     };

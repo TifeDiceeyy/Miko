@@ -9,8 +9,7 @@ is the "what will bite you" doc.
 review (billing safety, making the swap actually swap, shippable installers,
 robustness, tests). Follow its ground rules, above all: **no live fal.ai
 sessions without the owner's explicit OK**, since every connect attempt bills
-the owner's real account. Note that this file's "Building on Windows" step 4
-is currently wrong for a fresh clone — see `FIX_PLAN.md` step 3.4.
+the owner's real account.
 
 ## What this app is
 
@@ -31,14 +30,14 @@ npm start        # same build step, launches without DevTools
 ```
 
 You need a fal.ai API key to actually connect (get one at
-fal.ai/dashboard/keys). Enter it in the app's Settings → Advanced panel —
+fal.ai/dashboard/keys). Enter it in the app's Model settings → API key —
 it's encrypted at rest via Electron's `safeStorage` (OS keychain) in the
 app's userData directory, never committed to this repo. For scripted/CI
 use you can set `FAL_KEY` as an env var instead; `main.js`'s `loadFalKey()`
 checks that first.
 
 Check account balance at fal.ai/dashboard/billing — the app also surfaces
-it in-app (Settings → Advanced), masked behind an eye-toggle by default.
+it in-app, masked behind an eye toggle by default.
 
 ## Verify changes
 
@@ -72,8 +71,9 @@ This is the path with no Wine and no cross-build quirks — build natively
 on the Windows machine that will run the app.
 
 1. **Install prerequisites** (once):
-   - [Node.js LTS](https://nodejs.org) (v20 or newer) — installs `npm`
-     alongside it.
+   - [Node.js](https://nodejs.org) 22 LTS or newer — installs `npm`
+     alongside it. Node 22 is needed for `npm test` on Windows: its test
+     runner expands `test/*.test.js` itself, which Command Prompt doesn't.
    - [Git for Windows](https://git-scm.com/download/win).
 2. **Clone and enter the repo** (PowerShell or Command Prompt):
    ```
@@ -107,14 +107,24 @@ on the Windows machine that will run the app.
    ```
    npm run dev
    ```
-   You'll still need a fal.ai API key entered in Settings → Advanced (or
-   set the `FAL_KEY` environment variable) before Start Live will connect
-   — see "Install & run" above.
+   You'll still need a fal.ai API key entered in Model settings → API key
+   (or set the `FAL_KEY` environment variable) before Start Live will
+   connect — see "Install & run" above.
+7. **To check it on this machine** (optional): `npm test` runs everything,
+   including the Windows network detection and the OBS page in a real
+   browser when these are set:
+   ```
+   set MIKO_REAL_NETWORK_CHECK=1
+   set MIKO_BROWSER=C:\Program Files\Google\Chrome\Application\chrome.exe
+   npm test
+   ```
+8. **OBS:** follow "OBS output setup" in `README.md`. On Windows the OBS
+   page file is `%APPDATA%\Miko\obs-output.html`.
 
 ## Architecture (see README.md for the diagram)
 
 - `main.js` — Electron main process: fal.ai key storage (`safeStorage`),
-  balance lookup, realtime token minting, local OBS MJPEG server. No
+  balance lookup, realtime token minting, local OBS output (`lib/obs-relay.js`). No
   Express, no bundler — plain CommonJS, syntax-checked with `node --check`.
 - `preload.js` — narrow `contextBridge` surface (`window.deepLiveCam`).
   Pure passthrough to `ipcRenderer.invoke`/`send` — don't add logic here,
@@ -284,8 +294,13 @@ fal.ai's public docs pages.
      until the signature (issue kinds, VPN name, proxy, route interface)
      changes. If the check itself fails, Start goes ahead.
    - After Start, the WebRTC video link has `WEBRTC_CONNECT_TIMEOUT_MS`
-     (2s, `lib/lucy-config.ts`) to actually come up before the session
-     hard-stops. This is a real billing cap, not just a UX timeout — fal's
+     (10 s, `lib/lucy-config.ts`) to actually come up before the session
+     hard-stops. The clock starts before the token request, so it covers
+     the whole handshake. It was 2 s for a few hours on 2026-09-14 and every
+     real Start timed out. Each attempt logs one line with per-step times
+     ("Connected in 3.1s — token 0.4s · service ready 1.2s · …" or "Connect
+     failed after 10.0s — … · waiting on: answer (…)"); tune from those.
+     This is a real billing cap, not just a UX timeout — fal's
      session (and billing) starts the moment its server accepts the
      signaling connection, not when video reaches the client. The error
      message is picked from real evidence, never a guess: a blind timeout
@@ -355,25 +370,58 @@ fal.ai's public docs pages.
     default text, and `main.js`'s `sanitizeSettings` whitelist, updated to
     match (a legacy 512/768/1024 saved value now falls back to 1280).
 
-11. **The OBS relay's auth token was regenerated on every launch — any URL
-    saved into an OBS Browser Source went stale (401 Unauthorized) the next
-    time Miko started. Fixed 2026-09-14.** Found while setting up a real
-    OBS scene: two Browser Sources already existed pointing at
-    `http://127.0.0.1:5590/?token=...` from an earlier session, both
-    already correctly sized 1280×720, but both 401'd — the token they held
-    belonged to a process that no longer existed. `startObsServer()` used
-    to call `randomBytes(24)` fresh every time `obsServer` was null (i.e.
-    every app launch). Fixed: `loadOrCreateObsToken()` persists the token to
-    `<userData>/obs-token.txt` (plain text — this only guards the local
-    relay from other localhost processes/browser tabs reading the feed,
-    it's not a credential like the fal key, doesn't need `safeStorage`) and
-    reuses it on every subsequent launch. A Browser Source's URL in OBS can
-    now genuinely be configured once and left alone. If "OBS shows nothing"
-    or a 401 comes up again, check whether `obs-token.txt` still exists and
-    matches what's actually saved in OBS's scene collection JSON
-    (`%APPDATA%\obs-studio\basic\scenes\*.json`, `sources[].settings.url`)
-    before assuming a code regression — deleting/moving userData, or a
-    manually-edited OBS URL, would still cause exactly this symptom.
+11. **OBS output is a local page OBS's Browser Source loads, at the fixed
+    URL `http://127.0.0.1:7893/`** (no token, an owner decision on
+    2026-09-14; commit c13d7b7 has the token version). `lib/obs-relay.js`
+    serves the page (`/`), its script (`/page.js`, so the CSP can keep
+    `script-src 'self'`) and the frame stream (`/stream`, multipart PNG;
+    `/stream.mjpeg` is an alias).
+    - The page draws onto a canvas with `object-fit: contain`, the same
+      approach as the sibling Swapy project: black bars, never cropped or
+      stretched. Its CSP must allow `style-src 'unsafe-inline'`, or the
+      browser drops the `<style>` block and the frame renders tiny in the
+      top-left corner.
+    - The first version was a bare `<img src="/stream.mjpeg">`. When the
+      stream ended (Miko restart, OBS output toggled, a crash), Chromium
+      kept the last frame and never reconnected, so OBS froze or went
+      blank until someone refreshed the source by hand. The page script
+      now goes black when the stream ends and reconnects every second. It
+      can't help if OBS started while Miko wasn't running: the page itself
+      never loaded, so refresh the source once.
+    - Pacing: at most one frame in flight per viewer. A viewer still
+      receiving an older frame skips ahead and gets the newest one when its
+      socket drains, including the black end-of-call frame, so OBS never
+      falls behind or freezes on a face. The page likewise decodes only the
+      newest frame. Before this, a slow Browser Source made frames queue
+      in the main process and OBS lag further and further behind.
+    - `startObsFrameLoop()` in `app.js` starts the next encode only after
+      the previous frame has reached the main process, and drops a frame
+      still encoding when the call ends.
+    - OBS page file: at every launch Miko writes `obs-output.html` (from
+      `loaderHtml()`) to its userData folder, for a Browser Source in
+      "Local file" mode. A local file loads even while Miko is closed,
+      which is the point: a URL source that failed to load (OBS opened
+      before Miko) never retries. The file keeps an iframe on Miko's page,
+      hidden until the page's origin-checked `obs-alive` heartbeat arrives,
+      and searches 7893–7902 again (the usual port every other try) when
+      heartbeats stop or the stream has been down for 5 s.
+    - Send to OBS is on by default (`obsEnabled` absent → true), starts at
+      launch, and is saved the moment it's flipped
+      (`settings:set-obs-enabled`). The log says when OBS connects and
+      disconnects.
+    - Windows runs the same code. `startPreferred()` tries 7893, then up
+      to 7902: Hyper-V, WSL or Docker can reserve blocks of ports
+      (`netsh interface ipv4 show excludedportrange protocol=tcp`), which
+      fails with EACCES rather than EADDRINUSE. The app says when it had to
+      move, and the panel shows the URL in use. CI's Windows job loads the
+      page in the runner's Chrome (`test/obs-page.e2e.test.js`, enabled by
+      `MIKO_BROWSER`), plus the relay unit tests.
+    - If OBS shows nothing, check the source's URL in OBS's scene JSON
+      (`~/Library/Application Support/obs-studio/basic/scenes/*.json` or
+      `%APPDATA%\obs-studio\basic\scenes\*.json`, `sources[].settings.url`).
+      Sources set up before 2026-09-14 point at the old
+      `http://127.0.0.1:5590/?token=…`. Also check the source's width and
+      height: OBS's default Browser Source is 800×600, which downscales.
 
 ## Explicitly rejected features — don't re-propose these
 
@@ -387,8 +435,8 @@ fal.ai's public docs pages.
   in `app.js`). Don't reintroduce a clip-recording/upload feature without
   the user explicitly asking again.
 - **No OBS plugin, WebSocket, or virtual-cam driver.** OBS output is a
-  local MJPEG-over-HTTP server (`main.js`'s `startObsServer`) that OBS's
-  built-in Browser Source pulls from directly. Keep it that way.
+  local HTTP page (`lib/obs-relay.js`, see fact 11) that OBS's built-in
+  Browser Source loads directly. Keep it that way.
 
 ## Testing without a human
 

@@ -33,10 +33,13 @@ jobs:
       - run: npm ci
       # Runs everything on real Windows too. MIKO_REAL_NETWORK_CHECK also
       # runs the network check's PowerShell route/VPN detection against this
-      # machine. Node 22 expands test/*.test.js itself; cmd.exe doesn't.
+      # machine; MIKO_BROWSER loads the OBS page in the runner's Chrome (the
+      # engine OBS's Browser Source embeds). Node 22 expands test/*.test.js
+      # itself; cmd.exe doesn't.
       - run: npm test
         env:
           MIKO_REAL_NETWORK_CHECK: "1"
+          MIKO_BROWSER: 'C:\Program Files\Google\Chrome\Application\chrome.exe'
       - run: npm run build
       - run: npx electron-builder --win nsis --x64 --publish never
       - uses: actions/upload-artifact@v4

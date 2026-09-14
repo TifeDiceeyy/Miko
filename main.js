@@ -2,7 +2,6 @@ const { app, BrowserWindow, dialog, ipcMain, Menu, powerMonitor, session, shell,
 const { appendFile, copyFile, mkdir, readFile, stat, writeFile } = require("node:fs/promises");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const http = require("node:http");
 
 const isMac = process.platform === "darwin";
 let mainWindow = null;
@@ -27,102 +26,39 @@ function isTrustedSender(event) {
 }
 
 // ---------------------------------------------------------------------
-// OBS output — serves the transformed feed as an MJPEG stream over local
-// HTTP so OBS's built-in Browser Source can pull it in directly. No OBS
-// plugin, no NDI/Syphon driver, no OBS WebSocket needed: point a Browser
-// Source at the URL this returns and it just works.
+// OBS output — a local page that OBS's built-in Browser Source loads
+// directly: no OBS plugin, no NDI/Syphon driver, no OBS WebSocket. The
+// page, the frame stream and the frame pacing live in lib/obs-relay.js.
 // ---------------------------------------------------------------------
 
 // No auth token: an explicit owner decision (2026-09-14), trading away the
 // protection it gave (stopping some other local process, or a website open
 // in a normal browser tab, from quietly fetching this URL and reading the
 // live swap feed) for a plain, permanent, human-typeable URL. If that
-// trade ever needs revisiting, `git log` this comment's commit for the
-// original token-based implementation to restore.
-const OBS_DEFAULT_PORT = 7893;
-let obsServer = null;
-let obsPort = null;
-let latestFrame = null;
-const obsClients = new Set();
+// trade ever needs revisiting, commit c13d7b7 has the token-based version.
+const { createObsRelay, loaderHtml: obsLoaderHtml, DEFAULT_PORT: OBS_DEFAULT_PORT, SPARE_PORTS: OBS_SPARE_PORTS } = require("./lib/obs-relay");
+// Logs when OBS connects to or leaves Miko's output, so "is OBS connected?"
+// can be answered from the log.
+const obsRelay = createObsRelay({
+  onViewersChanged: (count) => logAppEvent("info", count
+    ? `OBS is connected to Miko's output (${count} ${count === 1 ? "source" : "sources"})`
+    : "OBS disconnected from Miko's output")
+});
 
-function obsPageHtml() {
-  // style-src must allow 'unsafe-inline', or the browser silently drops the
-  // whole <style> block below (CSP falls back to default-src 'none' for any
-  // directive not explicitly set) — with no CSS applied at all, the <img>
-  // renders at its bare natural size, anchored top-left, instead of filling
-  // and centering in the Browser Source. That's exactly what shipped: OBS
-  // showed a tiny top-left thumbnail in an otherwise empty box.
-  return "<!doctype html><html><head><meta charset=\"utf-8\">" +
-  "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src 'self'; style-src 'unsafe-inline'\">" +
-  "<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}img{width:100%;height:100%;object-fit:contain;display:block}</style>" +
-  "</head><body><img src=\"/stream.mjpeg\" alt=\"\" /></body></html>";
+// Written at every launch for OBS's Browser Source in "Local file" mode (see
+// loaderMain in lib/obs-relay.js). A local file always loads, even while
+// Miko is closed, so OBS never needs a refresh.
+function obsPageFilePath() {
+  return path.join(app.getPath("userData"), "obs-output.html");
 }
 
-// PNG frames, not JPEG, over the same multipart/x-mixed-replace transport —
-// Chromium (which OBS's Browser Source embeds) decodes an arbitrary
-// per-part Content-Type here just fine, it doesn't have to be JPEG. See
-// app.js's startObsFrameLoop() for why: canvas.toBlob's JPEG encoder always
-// applies 4:2:0 chroma subsampling regardless of the quality argument
-// (browsers expose no way to disable it) — a real, visible softening on
-// faces specifically. This is the exact same fix already proven in the
-// sibling Swapy project's OBS relay.
-function writeMjpegFrame(res, buffer) {
-  res.write(`--frame\r\nContent-Type: image/png\r\nContent-Length: ${buffer.length}\r\n\r\n`);
-  res.write(buffer);
-  res.write("\r\n");
-}
-
-async function startObsServer(port) {
-  if (obsServer) {
-    return { port: obsPort };
+async function writeObsPageFile() {
+  try {
+    await mkdir(path.dirname(obsPageFilePath()), { recursive: true });
+    await writeFile(obsPageFilePath(), obsLoaderHtml(), "utf8");
+  } catch (error) {
+    logAppEvent("warn", `Could not write the OBS page file (${obsPageFilePath()}): ${error.code || error.message}`);
   }
-  return new Promise((resolve, reject) => {
-    const server = http.createServer((req, res) => {
-      const expectedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
-      if (!expectedHosts.has(req.headers.host || "")) {
-        res.writeHead(403, { "Cache-Control": "no-store" });
-        res.end("Forbidden");
-        return;
-      }
-      const requestUrl = new URL(req.url || "/", `http://${req.headers.host}`);
-      if (requestUrl.pathname === "/stream.mjpeg") {
-        res.writeHead(200, {
-          "Content-Type": "multipart/x-mixed-replace; boundary=frame",
-          "Cache-Control": "no-cache, no-store, must-revalidate",
-          Connection: "close"
-        });
-        obsClients.add(res);
-        if (latestFrame) writeMjpegFrame(res, latestFrame);
-        req.on("close", () => obsClients.delete(res));
-      } else if (requestUrl.pathname === "/" || requestUrl.pathname === "/index.html") {
-        res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
-        res.end(obsPageHtml());
-      } else {
-        res.writeHead(404);
-        res.end();
-      }
-    });
-    server.once("error", (err) => {
-      obsServer = null;
-      obsPort = null;
-      reject(err);
-    });
-    server.listen(port, "127.0.0.1", () => {
-      obsServer = server;
-      obsPort = port;
-      resolve({ port });
-    });
-  });
-}
-
-async function stopObsServer() {
-  if (!obsServer) return;
-  for (const res of obsClients) res.end();
-  obsClients.clear();
-  await new Promise((resolve) => obsServer.close(resolve));
-  obsServer = null;
-  obsPort = null;
-  latestFrame = null;
 }
 
 function sanitizeSettings(value) {
@@ -143,10 +79,10 @@ function sanitizeSettings(value) {
     enablePromptExpansion: source.enablePromptExpansion === undefined ? true : Boolean(source.enablePromptExpansion),
     cameraId: String(source.cameraId || "").slice(0, 500),
     theme: source.theme === "light" ? "light" : "dark",
-    // Restored on launch so the relay auto-starts if it was on last time —
-    // see app.js's init(). The URL it's served at no longer changes (no
-    // token, fixed port), so there's nothing stale to worry about.
-    obsEnabled: Boolean(source.obsEnabled)
+    // On by default, so the output goes to OBS without setup: the relay
+    // starts at launch (app.js's init()) and frames flow whenever a session
+    // is live. Only an explicit saved `false` turns it off.
+    obsEnabled: source.obsEnabled === undefined ? true : Boolean(source.obsEnabled)
   };
 }
 
@@ -363,6 +299,7 @@ async function migrateLegacySettings() {
 
 if (hasSingleInstanceLock) app.whenReady().then(async () => {
   await migrateLegacySettings();
+  await writeObsPageFile();
   createMenu();
 
   session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
@@ -393,7 +330,7 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   logAppEvent("info", "Miko is quitting");
-  void stopObsServer();
+  void obsRelay.stop();
 });
 
 ipcMain.handle("window:control", (event, action) => {
@@ -655,44 +592,77 @@ ipcMain.handle("shell:open-external", (event, url) => {
   if (typeof url === "string" && url.startsWith("https://")) shell.openExternal(url);
 });
 
-ipcMain.handle("obs:start", async (event, requestedPort) => {
+ipcMain.handle("obs:start", async (event) => {
   if (!isTrustedSender(event)) throw new Error("Untrusted request.");
-  const port = Number(requestedPort) || OBS_DEFAULT_PORT;
   try {
-    const { port: boundPort } = await startObsServer(port);
-    logAppEvent("info", `OBS output started on localhost port ${boundPort}`);
-    return { url: `http://127.0.0.1:${boundPort}/` };
+    // 7893 unless it's taken or reserved (see startPreferred()); the
+    // renderer tells the user when the URL moved.
+    const { port } = await obsRelay.startPreferred(OBS_DEFAULT_PORT, OBS_SPARE_PORTS);
+    logAppEvent("info", port === OBS_DEFAULT_PORT
+      ? `OBS output started on localhost port ${port}`
+      : `OBS output started on localhost port ${port} (port ${OBS_DEFAULT_PORT} is taken or reserved)`);
+    return { url: `http://127.0.0.1:${port}/`, port, preferredPort: OBS_DEFAULT_PORT, file: obsPageFilePath() };
   } catch (err) {
-    throw new Error(
-      err.code === "EADDRINUSE"
-        ? `Port ${port} is already in use — try a different port.`
-        : `Could not start OBS output: ${err.message}`
-    );
+    if (err.code === "ENOPORT") {
+      logAppEvent("error", `OBS output: no free local port (${err.failures.join(", ")})`);
+      throw new Error(
+        `Miko couldn't open a local port for OBS: ports ${OBS_DEFAULT_PORT}–${OBS_DEFAULT_PORT + OBS_SPARE_PORTS} are all taken. ` +
+        "Other programs are using them, or Windows has reserved them for Hyper-V, WSL or Docker. " +
+        "Close those programs or restart the computer, then turn Send to OBS on again."
+      );
+    }
+    throw new Error(`Could not start OBS output: ${err.message}`);
   }
 });
 
 ipcMain.handle("obs:stop", async (event) => {
   if (!isTrustedSender(event)) return;
-  await stopObsServer();
+  await obsRelay.stop();
   logAppEvent("info", "OBS output stopped");
 });
 
 ipcMain.handle("obs:status", (event) => {
   if (!isTrustedSender(event)) return { running: false };
-  return obsServer
-    ? { running: true, url: `http://127.0.0.1:${obsPort}/` }
+  return obsRelay.running
+    ? { running: true, url: `http://127.0.0.1:${obsRelay.port}/`, file: obsPageFilePath() }
     : { running: false };
+});
+
+ipcMain.handle("obs:reveal-file", async (event) => {
+  if (!isTrustedSender(event)) return "Untrusted request.";
+  await writeObsPageFile();
+  try {
+    await stat(obsPageFilePath());
+  } catch {
+    return `Miko couldn't create the OBS page file at ${obsPageFilePath()}. Check that Miko can write to its settings folder.`;
+  }
+  shell.showItemInFolder(obsPageFilePath());
+  return null;
+});
+
+// Saves just the Send to OBS choice, the moment it's flipped, keeping every
+// other saved setting as it is.
+ipcMain.handle("settings:set-obs-enabled", async (event, enabled) => {
+  if (!isTrustedSender(event)) return;
+  let current = { prompt: presets.DEFAULT_PROMPTS.character };
+  try {
+    current = JSON.parse(await readFile(settingsPath(), "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw new Error(`Settings file can't be read, so Send to OBS wasn't saved: ${error.code || error.message}`);
+  }
+  const settings = sanitizeSettings({ ...current, obsEnabled: Boolean(enabled) });
+  await mkdir(path.dirname(settingsPath()), { recursive: true });
+  await writeFile(settingsPath(), JSON.stringify(settings, null, 2), "utf8");
 });
 
 // Hot path — called ~15x/second while OBS output is on, so this is a
 // fire-and-forget `send`, not an `invoke` round trip.
 ipcMain.on("obs:frame", (event, buffer) => {
-  if (!isTrustedSender(event) || !obsServer) return;
-  latestFrame = Buffer.from(buffer);
-  for (const res of obsClients) writeMjpegFrame(res, latestFrame);
+  if (!isTrustedSender(event) || !obsRelay.running) return;
+  obsRelay.pushFrame(Buffer.from(buffer));
 });
 
 ipcMain.on("obs:clear-frame", (event) => {
   if (!isTrustedSender(event)) return;
-  latestFrame = null;
+  obsRelay.clearFrame();
 });
