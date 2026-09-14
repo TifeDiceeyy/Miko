@@ -2,6 +2,15 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const check = require("../lib/network-check");
 
+// Opt-in: touches the real network and OS tools. CI's Windows job sets it,
+// which is the only place the PowerShell detection runs on real Windows.
+test("real check on this machine finds the route to the service", { skip: !process.env.MIKO_REAL_NETWORK_CHECK }, async () => {
+  const result = await check.checkNetwork({ resolveProxy: async () => "DIRECT" });
+  console.log(`[network-check] ${process.platform}: ${JSON.stringify(result)}`);
+  assert.equal(result.reachable, true, "the service should be reachable from here");
+  assert.ok(JSON.parse(result.signature).route, "the route lookup should name an interface");
+});
+
 test("macOS: reads the interface used for the service's address", () => {
   const output = "   route to: 35.253.220.11\ndestination: default\n    gateway: 192.168.1.1\n  interface: en0\n      flags: <UP,GATEWAY,DONE>";
   assert.equal(check.parseMacRouteInterface(output), "en0");
