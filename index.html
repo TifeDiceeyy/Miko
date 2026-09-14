@@ -68,7 +68,7 @@
             <em id="networkMeterLabel">Network —</em>
           </div>
           <span id="topStatus" class="status-chip ready"><i></i><span>Ready</span></span>
-          <span id="liveTimer" class="live-timer" role="status" aria-label="Live session duration" hidden>00:00</span>
+          <span id="liveTimer" class="live-timer" role="timer" aria-label="Live session duration" hidden>00:00</span>
           <button id="themeToggle" class="icon-btn" type="button" aria-label="Switch to light theme" title="Toggle theme"><svg><use href="#i-sun" /></svg></button>
           <button id="settingsToggle" class="icon-btn settings-shortcut" type="button" aria-label="Open model settings"><svg><use href="#i-sliders" /></svg></button>
           <div class="window-controls" aria-label="Window controls">
@@ -109,7 +109,7 @@
         </section>
 
         <div id="cameraError" class="inline-alert" role="alert" hidden>
-          <svg><use href="#i-info" /></svg><div><b>Session could not start</b><p id="cameraErrorText">Check camera access and try again.</p></div><button id="retryCamera" type="button">Try again</button>
+          <svg><use href="#i-info" /></svg><div><b>Session could not start</b><p id="cameraErrorText">Check camera access and try again.</p></div><button id="openCameraSettings" type="button" hidden>Open camera settings</button><button id="retryCamera" type="button">Try again</button>
         </div>
 
         <section class="transport" aria-label="Session controls">
@@ -192,7 +192,7 @@
             <input id="obsUrlField" type="text" readonly />
             <button id="copyObsUrl" class="field-action" type="button" aria-label="Copy URL" title="Copy URL">⧉</button>
           </div>
-          <p class="field-hint">In OBS: Add Source → Browser → paste this URL. Streams live output at up to 30fps, high JPEG quality.</p>
+          <p class="field-hint">In OBS: Add Source → Browser → paste this private URL. Streams live output at up to 15fps.</p>
         </div>
 
         <div class="settings-divider"></div>
@@ -209,8 +209,10 @@
         <label for="apiKeyInput">API key</label>
         <input id="apiKeyInput" type="password" placeholder="Paste your key" spellcheck="false" autocomplete="off" />
         <p class="field-hint">Don't have one yet? <button id="openFalDashboard" class="link-button" type="button">Get a key <svg><use href="#i-external" /></svg></button></p>
+        <p class="field-hint"><button id="topUpBalance" class="link-button" type="button">Top up balance <svg><use href="#i-external" /></svg></button></p>
         <p id="keyStatusText" class="field-hint">Checking…</p>
         <p id="balanceText" class="field-hint" hidden></p>
+        <button id="openLogsFolder" class="advanced-button" type="button">Open diagnostic logs</button>
       </div>
       <footer><button value="cancel" class="btn secondary">Cancel</button><button id="applyKey" value="default" class="btn primary">Save key</button></footer>
     </form>
@@ -219,6 +221,8 @@
   <canvas id="obsCanvas" hidden></canvas>
   <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
   <div id="srStatus" class="sr-only" aria-live="polite"></div>
+  <script src="lib/billing-policy.js"></script>
+  <script src="lib/reference-policy.js"></script>
   <script src="dist/lucy-session.bundle.js"></script>
   <script src="app.js"></script>
 </body>

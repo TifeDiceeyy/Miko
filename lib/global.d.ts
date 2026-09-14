@@ -4,6 +4,11 @@ declare global {
   interface Window {
     deepLiveCam: {
       appInfo(): Promise<{ version: string; platform: string; architecture: string }>;
+      logEvent(level: "info" | "warn" | "error", message: string): void;
+      onSystemSuspend(callback: (reason: string) => void): () => void;
+      getCameraAccess(): Promise<string>;
+      openCameraSettings(): Promise<boolean>;
+      openLogsFolder(): Promise<boolean>;
       pickMedia(kind: "image" | "video"): Promise<{ name: string; path: string; url: string } | null>;
       loadSettings(): Promise<Record<string, unknown> | null>;
       saveSettings(settings: Record<string, unknown>): Promise<{ ok: boolean; settings?: unknown; message?: string }>;
@@ -12,6 +17,7 @@ declare global {
       getBalance(): Promise<{ balance: number; currency: string } | null>;
       saveKey(key: string): Promise<{ hasKey: boolean }>;
       getToken(app: string): Promise<string>;
+      deleteRequestPayload(requestId: string): Promise<{ ok: boolean }>;
       openExternal(url: string): Promise<void>;
       obsStart(port?: number): Promise<{ url: string }>;
       obsStop(): Promise<void>;

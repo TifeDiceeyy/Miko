@@ -1,6 +1,6 @@
 {
   "name": "deeplivecam-gui",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Miko — a secure Electron control surface for live realtime character swap.",
   "main": "main.js",
   "author": "Miko",
@@ -11,9 +11,12 @@
     "start": "npm run build && electron .",
     "dev": "npm run build && electron . --dev",
     "typecheck": "tsc --noEmit",
-    "check": "node --check main.js && node --check preload.js && node --check app.js",
+    "check": "node --check main.js && node --check preload.js && node --check app.js && node --check lib/billing-policy.js && node --check lib/reference-policy.js",
+    "test": "node --test test/*.test.js",
     "pack": "electron-builder --dir",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder",
+    "dist:mac": "npm run build && electron-builder --mac --universal",
+    "dist:win": "npm run build && electron-builder --win nsis --x64"
   },
   "dependencies": {
     "@fal-ai/client": "^1.10.1"
@@ -37,20 +40,25 @@
       "index.html",
       "styles.css",
       "app.js",
+      "lib/billing-policy.js",
+      "lib/reference-policy.js",
       "dist/**/*",
       "README.md",
       "PRODUCT.md"
     ],
     "mac": {
       "category": "public.app-category.video",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "entitlements.mac.plist",
+      "entitlementsInherit": "entitlements.mac.plist",
       "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
       "target": [
         "dmg",
         "zip"
       ],
       "extendInfo": {
-        "NSCameraUsageDescription": "Miko uses the camera for live preview and the realtime swap session.",
-        "NSMicrophoneUsageDescription": "Miko can include microphone audio in a live session."
+        "NSCameraUsageDescription": "Miko uses the camera for live preview and the realtime swap session."
       }
     },
     "win": {

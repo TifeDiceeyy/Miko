@@ -40,27 +40,52 @@ directly to fal.ai over WebRTC and the transformed stream comes back the
 same way; only a short-lived signed token (minted by the main process) and
 your prompt/reference image leave your machine.
 
-Miko does not record live sessions. The optional clip recorder/upload path
-has been removed, and transient result/OBS frames plus the in-app session
-timeline are cleared immediately when a call ends.
+Miko does not record live sessions. Transient result and OBS frames are
+cleared immediately when a call ends. Miko also requests deletion of each
+remote request payload when the realtime service supplies a request ID.
+The local rotating diagnostic log contains lifecycle text only—never video
+frames, reference-image data, or API keys.
+
+The service currently lists Character Swap at $0.04/second and Virtual
+Try-on at $0.02/second. Miko verifies the current account balance before
+every manual start, retry, and automatic reconnect, preserves a $1 safety
+floor using a local spend timer, and uses balance polling only as a
+cross-check.
 
 ## Build
 
 ```
 npm run build       # bundle lib/renderer-entry.ts -> dist/lucy-session.bundle.js
 npm run typecheck   # tsc --noEmit over lib/
+npm test            # billing policy + mocked signaling/WebRTC regression tests
 npm run dist        # electron-builder package (dmg/zip, nsis, AppImage/deb)
+npm run dist:mac    # build first, then make universal macOS dmg/zip
+npm run dist:win    # build first, then make Windows x64 NSIS installer
 ```
 
 Release builds:
 
 ```
-npx electron-builder --mac --universal
-npx electron-builder --win nsis --x64
+npm run dist:mac
+npm run dist:win
+```
+
+The macOS configuration includes the camera entitlement and hardened
+runtime settings. A public release still needs an Apple Developer ID
+certificate and notarization to avoid Gatekeeper warnings. Windows releases
+likewise need a trusted code-signing certificate to avoid SmartScreen
+warnings; unsigned local builds remain installable after the OS warning is
+acknowledged.
+
+For the current ad-hoc macOS build, move Miko to Applications and, if
+Gatekeeper quarantines it, run:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Miko.app
 ```
 
 **Building on Windows after cloning:** see "Building on Windows itself,
 after cloning" in `AGENTS.md` for the full step-by-step (Node.js/Git
-prerequisites, `npm install`, `npx electron-builder --win nsis --x64`,
+prerequisites, `npm install`, `npm run dist:win`,
 where the `.exe` lands, and the expected SmartScreen warning on an
 unsigned build).

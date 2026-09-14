@@ -36,6 +36,7 @@ export interface LucySessionSnapshot {
 }
 
 type Listener = () => void;
+export type ConnectGuard = (context: { isReconnect: boolean; endpoint: string }) => Promise<void>;
 
 /**
  * Wire shape for messages sent/received over the fal realtime signaling
@@ -100,11 +101,9 @@ function toEditParamsWire(params: EditParams) {
  * the RTCPeerConnection, the local webcam stream, reconnect/backoff state,
  * and adaptive-resolution stats polling.
  *
- * This class is framework-agnostic and deliberately NOT React state — it is
- * held in a module-level singleton (see `getLucySession` below) so it
- * survives component re-renders and React StrictMode's dev double-invoke of
- * effects. `hooks/useLucyRealtime.ts` subscribes to it via
- * `useSyncExternalStore`.
+ * This class is UI-framework agnostic and held in a module-level singleton
+ * (see `getLucySession` below), so one window cannot accidentally create
+ * overlapping billable sessions.
  */
 export class LucyRealtimeSession {
   private snapshot: LucySessionSnapshot;
@@ -112,6 +111,7 @@ export class LucyRealtimeSession {
 
   private pc: RTCPeerConnection | null = null;
   private connection: RealtimeConnectionHandle | null = null;
+  private connectGuard: ConnectGuard | null = null;
 
   private editParams: EditParams = {};
 
@@ -129,6 +129,7 @@ export class LucyRealtimeSession {
   // websocket harmless instead of letting them mutate the replacement session.
   private attemptGeneration = 0;
   private pendingRemoteCandidates: RTCIceCandidateInit[] = [];
+  private requestIds = new Set<string>();
 
   // Set when the most recent failure was fal's own "Concurrent session
   // limit reached" — switches scheduleReconnect to a longer, dedicated
@@ -141,10 +142,10 @@ export class LucyRealtimeSession {
 
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private iceRestartTried = false;
+  private troubleGraceTimer: ReturnType<typeof setTimeout> | null = null;
 
   private statsTimer: ReturnType<typeof setInterval> | null = null;
-  private lastStats: { bytesSent: number; timestamp: number } | null = null;
+  private lastStats: { packetsLost: number; packetsSent: number; timestamp: number } | null = null;
   private goodStatsStreak = 0;
   private poorStatsStreak = 0;
 
@@ -177,6 +178,11 @@ export class LucyRealtimeSession {
 
   getSnapshot = (): LucySessionSnapshot => this.snapshot;
 
+  /** One preflight gate for manual starts, retries, and automatic reconnects. */
+  setConnectGuard(guard: ConnectGuard | null) {
+    this.connectGuard = guard;
+  }
+
   private setSnapshot(patch: Partial<LucySessionSnapshot>) {
     this.snapshot = { ...this.snapshot, ...patch };
     for (const listener of this.listeners) listener();
@@ -191,9 +197,8 @@ export class LucyRealtimeSession {
   }
 
   /**
-   * Public connect entrypoint. Guarded so double-clicks, rapid re-renders,
-   * and React StrictMode's double-invoke of effects can never stack a
-   * second connection (Fix #2: single-flight guard + close-before-open).
+   * Public connect entrypoint. The single-flight check and shared preflight
+   * guard apply identically to manual starts, Try again, and auto-reconnects.
    */
   async connect(isReconnect = false): Promise<void> {
     if (this.connecting) return;
@@ -212,20 +217,23 @@ export class LucyRealtimeSession {
     // Reset per attempt — only this attempt's actual failure (if any)
     // should decide which backoff schedule scheduleReconnect() picks.
     this.isConcurrencyLimitError = false;
+    let gatePassed = false;
 
     try {
+      this.setSnapshot({ state: "connecting", error: null });
+      await this.connectGuard?.({ isReconnect, endpoint: this.endpoint });
+      gatePassed = true;
+      if (attempt !== this.attemptGeneration || this.closedIntentionally) return;
       // Close-before-open: tear down any existing (even half-open) session
       // before creating a new one. There is never more than one at a time.
       // The camera preview (if already running) survives this — connect()
       // reuses it instead of re-acquiring, so going live from an active
       // preview doesn't re-trigger a permission prompt or a visible blip.
       this.teardown({ keepIntentionalFlag: true, keepLocalStream: true });
-      this.setSnapshot({ state: "connecting", error: null });
       await this.open(attempt);
       if (attempt !== this.attemptGeneration || this.closedIntentionally) return;
       this.setSnapshot({ state: "live", error: null });
       this.reconnectAttempt = 0;
-      this.iceRestartTried = false;
       this.isConcurrencyLimitError = false;
       this.startStatsPolling();
     } catch (err) {
@@ -253,7 +261,7 @@ export class LucyRealtimeSession {
       // retrying on a timer just burns backoff attempts on a failure that
       // can't self-resolve. Leave those for a manual "Retry" click; only
       // auto-reconnect on transient network/signaling failures.
-      if (!this.isUnrecoverableMediaError(err) && !this.isUnrecoverableAccountError(err)) {
+      if (gatePassed && !this.isUnrecoverableMediaError(err) && !this.isUnrecoverableAccountError(err)) {
         this.scheduleReconnect();
       }
     } finally {
@@ -326,7 +334,7 @@ export class LucyRealtimeSession {
   }
 
   /**
-   * Account/config-level failures (exhausted balance, bad or missing API
+   * Account/config/start-gate failures (exhausted balance, bad or missing API
    * key, unauthorized) need the user to actually do something before a
    * retry could ever succeed — auto-reconnecting on the same broken
    * credentials just burns through the whole RECONNECT_BACKOFF_MS ladder
@@ -338,7 +346,7 @@ export class LucyRealtimeSession {
    */
   private isUnrecoverableAccountError(err: unknown): boolean {
     const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
-    return /402|insufficient.?(credit|balance|fund)|payment.?required|exhausted.?(credit|balance)|401|unauthorized|no api key configured|untrusted request|could not (be )?decrypt|could not save the api key/i.test(
+    return /402|insufficient.?(credit|balance|fund)|payment.?required|exhausted.?(credit|balance)|balance[^.]*exhausted|balance (check unavailable|is at or below)|could not verify account balance|reference image is required|choose a reference image|401|unauthorized|authentication failed|no api key configured|untrusted request|could not (be )?decrypt|could not save the api key/i.test(
       message
     );
   }
@@ -365,9 +373,9 @@ export class LucyRealtimeSession {
     if (err instanceof Error || typeof err === "string") {
       const message = err instanceof Error ? err.message : err;
       if (/concurrent session limit reached|429|concurrent_requests_limit/i.test(message)) {
-        return `Too many active sessions on this account right now (concurrency limit reached) — this can happen even with no client bug, since fal.ai takes a moment to free a worker after a prior session closes. Retrying automatically. (${message})`;
+        return `Too many active sessions on this account right now. The service may need time to release the previous worker; retrying automatically. (${message})`;
       }
-      if (/402|insufficient.?(credit|balance|fund)|payment.?required|exhausted.?(credit|balance)/i.test(message)) {
+      if (/402|insufficient.?(credit|balance|fund)|payment.?required|exhausted.?(credit|balance)|balance[^.]*exhausted/i.test(message)) {
         return `Insufficient balance — your account is out of credits. Add funds, then click Connect again. (${message})`;
       }
       if (/401|unauthorized|token/i.test(message)) {
@@ -400,6 +408,7 @@ export class LucyRealtimeSession {
     this.closedIntentionally = true;
     this.connecting = false;
     this.clearReconnectTimer();
+    this.clearTroubleGraceTimer();
     this.cancelConnectWait("connection cancelled");
     this.stopStatsPolling();
     this.teardown({ keepIntentionalFlag: true, keepLocalStream: true });
@@ -474,12 +483,13 @@ export class LucyRealtimeSession {
                 const reject = this.connectReject;
                 this.clearConnectWait();
                 reject(error);
-              } else {
-                // Token refresh failed mid-session (scheduleTokenRefresh)
-                // rather than during initial connect — same silent-drop
-                // problem, surfaced the same way a live-session signaling
-                // error would be.
+              } else if (this.isUnrecoverableAccountError(error)) {
+                // A revoked key or exhausted account cannot sustain the call.
                 this.handleSignalingError(error, attempt);
+              } else {
+                // A transient refresh/network blip must not tear down a
+                // healthy peer connection and start another paid session.
+                this.setTransientError("Temporary account check failed; the live session is continuing.");
               }
             }
             throw error;
@@ -557,8 +567,13 @@ export class LucyRealtimeSession {
 
     pc.oniceconnectionstatechange = () => {
       if (attempt !== this.attemptGeneration || pc !== this.pc) return;
-      if (pc.iceConnectionState === "disconnected" || pc.iceConnectionState === "failed") {
+      if (pc.iceConnectionState === "disconnected") {
+        this.startIceDisconnectGrace();
+      } else if (pc.iceConnectionState === "failed") {
+        this.clearTroubleGraceTimer();
         this.handleConnectionTrouble(`ICE connection ${pc.iceConnectionState}`);
+      } else if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+        this.recoverFromTransientDisconnect();
       }
     };
 
@@ -566,6 +581,8 @@ export class LucyRealtimeSession {
       if (attempt !== this.attemptGeneration || pc !== this.pc) return;
       if (pc.connectionState === "failed" || pc.connectionState === "closed") {
         this.handleConnectionTrouble(`Peer connection ${pc.connectionState}`);
+      } else if (pc.connectionState === "connected") {
+        this.recoverFromTransientDisconnect();
       }
     };
 
@@ -616,6 +633,7 @@ export class LucyRealtimeSession {
 
   private async handleSignal(msg: SignalMessage, attempt: number) {
     if (attempt !== this.attemptGeneration || this.closedIntentionally) return;
+    if (typeof msg.request_id === "string") this.requestIds.add(msg.request_id);
 
     if (msg.type === "error" || msg.error) {
       const errText = typeof msg.error === "string" ? msg.error : JSON.stringify(msg.error);
@@ -689,12 +707,9 @@ export class LucyRealtimeSession {
    * object, or the specific network metric that crossed a threshold).
    *
    * `unrecoverable` marks a mid-session account/config failure (e.g. a
-   * token-refresh rejected because the balance ran out or the key was
-   * revoked while live) — an ICE restart or reconnect loop can't fix that,
-   * so skip straight to a terminal Error state instead of masking one
-   * account failure behind a "Reconnecting…" cycle that would only repeat
-   * it every few seconds. */
-  private async handleConnectionTrouble(reason?: string, unrecoverable = false) {
+   * revoked key or exhausted balance). Recoverable failures close the old
+   * paid session before entering the bounded reconnect schedule. */
+  private handleConnectionTrouble(reason?: string, unrecoverable = false) {
     if (reason) this.lastTroubleReason = reason;
     if (this.closedIntentionally || this.troubleHandled) return;
     this.troubleHandled = true;
@@ -702,31 +717,30 @@ export class LucyRealtimeSession {
     if (unrecoverable) {
       ++this.attemptGeneration;
       this.clearReconnectTimer();
+      this.clearTroubleGraceTimer();
       this.teardown({ keepIntentionalFlag: true, keepLocalStream: true });
       this.setSnapshot({ state: "error", error: reason ?? this.lastTroubleReason, remoteStream: null });
       return;
     }
 
-    this.setSnapshot({ state: "reconnecting", error: reason ?? this.lastTroubleReason });
-
-    const pc = this.pc;
-    if (pc && !this.iceRestartTried) {
-      this.iceRestartTried = true;
-      try {
-        // First line of defense: ICE restart, cheaper than a full teardown.
-        pc.restartIce();
-        // restartIce() alone doesn't renegotiate on all browsers; force it.
-        const offer = await pc.createOffer({ iceRestart: true });
-        await pc.setLocalDescription(offer);
-        this.sendSignal({ type: "offer", sdp: pc.localDescription?.sdp });
-        this.troubleHandled = false;
-        return;
-      } catch (err) {
-        console.warn("[lucy] ICE restart failed, falling back to full reconnect", err);
-      }
-    }
-
+    ++this.attemptGeneration;
+    this.connecting = false;
+    this.clearTroubleGraceTimer();
+    this.teardown({ keepIntentionalFlag: true, keepLocalStream: true });
     this.scheduleReconnect();
+  }
+
+  private startIceDisconnectGrace() {
+    if (this.closedIntentionally || this.troubleGraceTimer) return;
+    this.troubleGraceTimer = setTimeout(() => {
+      this.troubleGraceTimer = null;
+      this.handleConnectionTrouble("ICE connection disconnected for 4s");
+    }, 4000);
+  }
+
+  private recoverFromTransientDisconnect() {
+    if (this.closedIntentionally) return;
+    this.clearTroubleGraceTimer();
   }
 
   private scheduleReconnect() {
@@ -756,7 +770,6 @@ export class LucyRealtimeSession {
     // Never a tight loop — exponential backoff (Fix #1).
     this.reconnectTimer = setTimeout(() => {
       this.troubleHandled = false;
-      this.iceRestartTried = false;
       void this.connect(true);
     }, delay);
   }
@@ -779,6 +792,13 @@ export class LucyRealtimeSession {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+  }
+
+  private clearTroubleGraceTimer() {
+    if (this.troubleGraceTimer) {
+      clearTimeout(this.troubleGraceTimer);
+      this.troubleGraceTimer = null;
     }
   }
 
@@ -821,16 +841,11 @@ export class LucyRealtimeSession {
     let packetsLost = 0;
     let packetsSent = 0;
     let rttMs: number | null = null;
-    let bytesSent = 0;
 
     stats.forEach((report) => {
       if (report.type === "outbound-rtp" && (report as { kind?: string }).kind === "video") {
-        const r = report as unknown as {
-          packetsSent?: number;
-          bytesSent?: number;
-        };
+        const r = report as unknown as { packetsSent?: number };
         packetsSent += r.packetsSent ?? 0;
-        bytesSent += r.bytesSent ?? 0;
       }
       if (report.type === "remote-inbound-rtp") {
         const r = report as unknown as { packetsLost?: number; roundTripTime?: number };
@@ -839,14 +854,15 @@ export class LucyRealtimeSession {
       }
     });
 
-    const lossPct = packetsSent > 0 ? (packetsLost / (packetsSent + packetsLost)) * 100 : 0;
+    const deltaSent = this.lastStats ? Math.max(0, packetsSent - this.lastStats.packetsSent) : 0;
+    const deltaLost = this.lastStats ? Math.max(0, packetsLost - this.lastStats.packetsLost) : 0;
+    const intervalPackets = deltaSent + deltaLost;
+    const lossPct = intervalPackets > 0 ? (deltaLost / intervalPackets) * 100 : 0;
     const quality = this.classifyNetwork(lossPct, rttMs);
     this.setSnapshot({ networkQuality: quality });
 
-    // Sustained high loss / bad RTT is itself a signal to kick the
-    // reconnect path (Fix #4 ties into Fix #1) — not just a resolution step.
-    // A link can be bad enough to blockify the swap without ever tripping
-    // an ICE disconnected/failed state, so this is the independent trigger.
+    // Poor quality lowers resolution and warns. It never starts a fresh paid
+    // session while the current peer connection remains alive.
     if (quality === "poor") {
       this.goodStatsStreak = 0;
       this.poorStatsStreak += 1;
@@ -854,8 +870,8 @@ export class LucyRealtimeSession {
       if (this.poorStatsStreak >= 4) {
         // ~8s of sustained poor quality at the default 2s poll interval.
         this.poorStatsStreak = 0;
-        this.handleConnectionTrouble(
-          `Sustained poor network (packet loss ${lossPct.toFixed(1)}%${rttMs ? `, RTT ${Math.round(rttMs)}ms` : ""})`
+        this.setTransientError(
+          `Network quality is poor (packet loss ${lossPct.toFixed(1)}%${rttMs ? `, RTT ${Math.round(rttMs)}ms` : ""}); resolution was lowered to keep this session stable.`
         );
       }
     } else if (quality === "good") {
@@ -872,7 +888,7 @@ export class LucyRealtimeSession {
       this.poorStatsStreak = 0;
     }
 
-    this.lastStats = { bytesSent, timestamp: Date.now() };
+    this.lastStats = { packetsLost, packetsSent, timestamp: Date.now() };
   }
 
   private classifyNetwork(lossPct: number, rttMs: number | null): NetworkQuality {
@@ -897,17 +913,16 @@ export class LucyRealtimeSession {
     // degradation is automatic; recovering back up stops at their pick).
     if (direction === 1 && nextResolution > this.preferredResolution) return;
 
-    const pc = this.pc;
-    const sender = pc?.getSenders().find((s) => s.track?.kind === "video");
-    if (!pc || !sender) return;
+    const track = this.snapshot.localStream?.getVideoTracks()[0];
+    if (!track) return;
 
     try {
-      const newStream = await this.acquireLocalStream(nextResolution);
-      const [newTrack] = newStream.getVideoTracks();
-      const oldStream = this.snapshot.localStream;
-      await sender.replaceTrack(newTrack);
-      oldStream?.getTracks().forEach((t) => t.stop());
-      this.setSnapshot({ resolution: nextResolution, localStream: newStream });
+      await track.applyConstraints({
+        width: { ideal: nextResolution },
+        height: { ideal: nextResolution },
+        aspectRatio: 1,
+      });
+      this.setSnapshot({ resolution: nextResolution });
     } catch (err) {
       this.setTransientError(`Couldn't switch to ${nextResolution}px: ${this.describeError(err)}`);
     }
@@ -929,7 +944,11 @@ export class LucyRealtimeSession {
 
     this.stopStatsPolling();
     this.troubleHandled = false;
-    this.iceRestartTried = false;
+    this.clearTroubleGraceTimer();
+    if (this.transientErrorTimer) {
+      clearTimeout(this.transientErrorTimer);
+      this.transientErrorTimer = null;
+    }
 
     if (this.pc) {
       this.pc.ontrack = null;
@@ -944,6 +963,12 @@ export class LucyRealtimeSession {
     this.connection?.close();
     this.connection = null;
     this.pendingRemoteCandidates = [];
+    for (const requestId of this.requestIds) {
+      void window.deepLiveCam.deleteRequestPayload(requestId).catch((error) => {
+        console.warn("[privacy] could not delete request payload", requestId, error);
+      });
+    }
+    this.requestIds.clear();
 
     if (!opts.keepLocalStream) {
       this.snapshot.localStream?.getTracks().forEach((track) => track.stop());
@@ -984,7 +1009,7 @@ function registerGlobalTeardownHandlers() {
 export function getLucySession(endpoint: string): LucyRealtimeSession {
   registerGlobalTeardownHandlers();
   if (activeSession && activeSession.getEndpoint() !== endpoint) {
-    activeSession.disconnect();
+    activeSession.hardStop();
     activeSession = null;
   }
   if (!activeSession) {

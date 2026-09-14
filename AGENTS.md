@@ -5,6 +5,13 @@ project cold. Read this before touching code. `README.md` has the
 user-facing overview; `PRODUCT.md` has the UI/product rationale. This file
 is the "what will bite you" doc.
 
+**Active work: `FIX_PLAN.md`** — the full fix plan from the 2026-09-14
+review (billing safety, making the swap actually swap, shippable installers,
+robustness, tests). Follow its ground rules, above all: **no live fal.ai
+sessions without the owner's explicit OK**, since every connect attempt bills
+the owner's real account. Note that this file's "Building on Windows" step 4
+is currently wrong for a fresh clone — see `FIX_PLAN.md` step 3.4.
+
 ## What this app is
 
 Miko is an Electron desktop app for live webcam character-swap and virtual
@@ -41,15 +48,15 @@ npm run check       # node --check on main.js, preload.js, app.js (plain JS, no 
 npm run build       # must succeed before `npm run dev`/`start` picks up lib/ changes — esbuild does NOT watch
 ```
 
-There's no automated test suite. The only reliable way to verify a runtime
-change is to actually launch the app and drive it — see "Testing without a
-human" below.
+Run `npm test` for billing-policy and mocked signaling/WebRTC regressions.
+Runtime UI changes should also be verified by launching the app; see
+"Testing without a human" below.
 
 ## Building installers
 
 ```
-npx electron-builder --mac --universal    # dmg + zip, output in release/
-npx electron-builder --win nsis --x64     # installer .exe, output in release/
+npm run dist:mac                          # renderer + dmg/zip in release/
+npm run dist:win                          # renderer + installer .exe in release/
 npm run dist                              # builds for the CURRENT host platform only
 ```
 
@@ -86,10 +93,10 @@ on the Windows machine that will run the app.
    and re-run `npm install`.
 4. **Build the installer:**
    ```
-   npx electron-builder --win nsis --x64
+   npm run dist:win
    ```
-   (`npm run dist` also works and defaults to the host platform, which is
-   Windows here — either command is fine.)
+   This builds the renderer bundle first, so a fresh clone cannot produce an
+   installer that is missing `dist/lucy-session.bundle.js`.
 5. **Find the output:** `release\Miko-<version>-windows-x64.exe`. This is
    an unsigned installer (no code-signing certificate is configured), so
    Windows SmartScreen will show an "unknown publisher" warning the first

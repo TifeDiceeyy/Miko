@@ -3,6 +3,10 @@ const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selec
 
 const bridge = window.deepLiveCam;
 const { getSession, REALTIME_ENDPOINTS, RESOLUTION_STEPS, MIN_REFERENCE_IMAGE_DIMENSION } = window.LucySession;
+const billing = window.MikoBillingPolicy;
+const { MIN_BALANCE_USD } = billing;
+const billingMeter = new billing.BillingMeter({ storage: window.localStorage });
+const referencePolicy = window.MikoReferencePolicy;
 
 const STATE_LABELS = {
   idle: "Idle",
@@ -10,6 +14,13 @@ const STATE_LABELS = {
   live: "Live",
   reconnecting: "Reconnecting…",
   error: "Error"
+};
+
+const DEFAULT_PROMPTS = {
+  [REALTIME_ENDPOINTS.characterSwap]:
+    "Replace the entire person in the live camera feed with the exact person or character shown in the reference image, including their face, facial features, hair, skin tone, body appearance, clothing, colors, materials, and silhouette. Keep the same identity and character design stable and consistent across every frame. Preserve the live person's pose, expression, hand motion, camera angle, lighting, and background. Do not invent, blend, or morph facial features, clothing, or identity.",
+  [REALTIME_ENDPOINTS.virtualTryOn]:
+    "Dress the person in the live camera feed in the exact garment shown in the reference image, matching its color, material, pattern, fit, and details. Keep the person's face, identity, pose, body shape, and background unchanged."
 };
 
 const elements = {
@@ -35,6 +46,7 @@ const elements = {
   cameraError: $("#cameraError"),
   cameraErrorText: $("#cameraErrorText"),
   retryCamera: $("#retryCamera"),
+  openCameraSettings: $("#openCameraSettings"),
   startBtn: $("#startBtn"),
   stopBtn: $("#stopBtn"),
   fullscreenBtn: $("#fullscreenBtn"),
@@ -79,6 +91,8 @@ const elements = {
   balanceVisibilityToggle: $("#balanceVisibilityToggle"),
   balanceVisibilityIcon: $("#balanceVisibilityIcon"),
   openFalDashboard: $("#openFalDashboard"),
+  topUpBalance: $("#topUpBalance"),
+  openLogsFolder: $("#openLogsFolder"),
   activityLog: $("#activityLog"),
   activityCount: $("#activityCount"),
   toastRegion: $("#toastRegion"),
@@ -92,11 +106,14 @@ const state = {
   balanceBlocksStart: false,
   balanceVisible: false,
   lastLoggedState: "idle",
-  lastSessionActive: false
+  lastSessionActive: false,
+  currentMode: REALTIME_ENDPOINTS.characterSwap,
+  cameraAccessError: null
 };
 
 let session;
 let unsubscribeSession = () => {};
+let promptUpdateTimer = null;
 
 function announce(message) {
   elements.srStatus.textContent = "";
@@ -123,10 +140,11 @@ function addActivity(message) {
   while (elements.activityLog.children.length > 20) elements.activityLog.lastElementChild.remove();
   state.activityCount = Math.min(state.activityCount + 1, 20);
   elements.activityCount.textContent = `${state.activityCount} ${state.activityCount === 1 ? "event" : "events"}`;
+  bridge.logEvent(message.startsWith("Error:") || message.includes("failed") ? "error" : "info", message);
 }
 
 // ---------------------------------------------------------------------
-// fal.ai session wiring
+// Realtime session wiring
 // ---------------------------------------------------------------------
 
 function currentEditParams() {
@@ -137,14 +155,35 @@ function currentEditParams() {
   };
 }
 
+function referenceRequirementText() {
+  return elements.modeSelect.value === REALTIME_ENDPOINTS.virtualTryOn
+    ? "Choose a reference image before starting — Virtual Try-on needs a photo of the garment."
+    : "Choose a reference image before starting — Character Swap needs a photo of the person or character.";
+}
+
 function attachSession(mode) {
   unsubscribeSession();
   session = getSession(mode);
+  session.setConnectGuard(gateSessionStart);
   session.setPreferredResolution(Number(elements.resolutionSelect.value));
   session.setPreferredDeviceId(elements.cameraSelect.value || undefined);
   session.updateEditParams(currentEditParams());
   unsubscribeSession = session.subscribe(render);
   render();
+  void session.previewCamera();
+}
+
+function streamDimensions(stream, videoEl) {
+  const settings = stream?.getVideoTracks?.()[0]?.getSettings?.() || {};
+  const width = settings.width || videoEl.videoWidth;
+  const height = settings.height || videoEl.videoHeight;
+  return width && height ? `${width} × ${height}` : "—";
+}
+
+function renderedVideoDimensions(videoEl, fallbackStream) {
+  return videoEl.videoWidth && videoEl.videoHeight
+    ? `${videoEl.videoWidth} × ${videoEl.videoHeight}`
+    : streamDimensions(fallbackStream, videoEl);
 }
 
 function bindVideo(videoEl, emptyEl, stream) {
@@ -184,8 +223,8 @@ function render() {
   const selectedCamera = elements.cameraSelect.selectedOptions[0];
   elements.sourceBadge.textContent = snap.localStream ? (selectedCamera?.textContent || "Live camera") : "No camera";
   elements.resultBadge.textContent = snap.remoteStream ? "Live output" : "Waiting…";
-  elements.sourceResolution.textContent = snap.localStream ? `${snap.resolution} × ${snap.resolution}` : "—";
-  elements.resultResolution.textContent = snap.remoteStream ? `${snap.resolution} × ${snap.resolution}` : "—";
+  elements.sourceResolution.textContent = streamDimensions(snap.localStream, elements.sourceVideo);
+  elements.resultResolution.textContent = renderedVideoDimensions(elements.resultVideo, snap.remoteStream);
 
   const paneState = (kind, text) => `<i></i>${text}`;
   elements.sourceState.className = `pane-state ${snap.localStream ? "live" : "idle"}`;
@@ -194,7 +233,7 @@ function render() {
   elements.resultState.innerHTML = paneState(null, snap.remoteStream ? "Live" : "Waiting");
 
   elements.networkFact.textContent = snap.networkQuality === "unknown" ? "—" : snap.networkQuality;
-  elements.resolutionFact.textContent = `${snap.resolution} × ${snap.resolution}`;
+  elements.resolutionFact.textContent = streamDimensions(snap.localStream, elements.sourceVideo);
 
   elements.networkMeter.dataset.quality = snap.networkQuality;
   const qualityLabel = snap.networkQuality === "unknown" ? "—" : snap.networkQuality[0].toUpperCase() + snap.networkQuality.slice(1);
@@ -216,22 +255,25 @@ function render() {
       ? "Frames are streaming out and back over WebRTC."
       : "Video streams directly between your camera and Miko.";
 
-  if (snap.error) {
+  const visibleError = snap.error || state.cameraAccessError;
+  if (visibleError) {
     elements.cameraError.hidden = false;
-    elements.cameraErrorText.textContent = snap.error;
+    elements.cameraErrorText.textContent = visibleError;
+    elements.openCameraSettings.hidden = !state.cameraAccessError;
   } else {
     elements.cameraError.hidden = true;
+    elements.openCameraSettings.hidden = true;
   }
 
   const isLive = snap.state === "live";
   const isBusy = snap.state === "connecting" || snap.state === "reconnecting";
-  // Balance at/below the floor blocks a *new* session, but never interrupts
-  // one already live/connecting — this only affects Start's own disabled
-  // state, not isBusy/isLive elsewhere.
-  elements.startBtn.disabled = isLive || isBusy || state.balanceBlocksStart;
-  elements.startBtn.title = state.balanceBlocksStart && !isLive && !isBusy
-    ? `Balance too low to start a session (min $${MIN_BALANCE_USD.toFixed(2)} required) — top up at fal.ai/dashboard/billing`
-    : "";
+  const missingReference = !state.referenceImageUrl;
+  elements.startBtn.disabled = isLive || isBusy || state.balanceBlocksStart || missingReference;
+  elements.startBtn.title = missingReference
+    ? referenceRequirementText()
+    : state.balanceBlocksStart && !isLive && !isBusy
+      ? `Balance too low to start a session (more than $${MIN_BALANCE_USD.toFixed(2)} required).`
+      : "";
   elements.stopBtn.disabled = snap.state === "idle";
   elements.modeSelect.disabled = isLive || isBusy;
   elements.resolutionSelect.disabled = isLive || isBusy;
@@ -242,13 +284,12 @@ function render() {
 
   // Log meaningful transitions once, not on every stats-poll re-render.
   if (snap.state !== state.lastLoggedState) {
-    if (snap.state === "live") { addActivity("Live session started"); startLiveTimer(); startLiveBalanceGuard(); }
+    if (snap.state === "live") { addActivity("Live session started"); startLiveTimer(); }
     else {
       if (snap.state === "idle" && state.lastLoggedState !== "idle") addActivity("Session stopped");
       else if (snap.state === "error") addActivity(`Error: ${snap.error || "connection failed"}`);
       else if (snap.state === "reconnecting") addActivity("Reconnecting…");
       stopLiveTimer();
-      stopLiveBalanceGuard();
     }
     state.lastLoggedState = snap.state;
   }
@@ -308,6 +349,35 @@ function loadImageDimensions(dataUri) {
   });
 }
 
+function resizeReferenceImage(dataUri) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const size = referencePolicy.computeReferenceSize(img.naturalWidth, img.naturalHeight);
+      const canvas = document.createElement("canvas");
+      canvas.width = size.width;
+      canvas.height = size.height;
+      const context = canvas.getContext("2d");
+      context.fillStyle = "#fff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(
+        img,
+        size.sourceX,
+        size.sourceY,
+        size.sourceWidth,
+        size.sourceHeight,
+        0,
+        0,
+        canvas.width,
+        canvas.height
+      );
+      resolve({ dataUri: canvas.toDataURL("image/jpeg", 0.9), width: canvas.width, height: canvas.height });
+    };
+    img.onerror = () => reject(new Error("Could not resize the reference image"));
+    img.src = dataUri;
+  });
+}
+
 async function chooseReferenceImage() {
   let result;
   try {
@@ -335,11 +405,18 @@ async function chooseReferenceImage() {
       elements.refWarning.textContent = "Works, but 768–1024px references give noticeably better fidelity.";
     }
 
-    state.referenceImageUrl = dataUri;
+    const optimized = await resizeReferenceImage(dataUri);
+    state.referenceImageUrl = optimized.dataUri;
     elements.fileName.textContent = result.name;
-    session.updateEditParams({ referenceImageUrl: dataUri });
-    addActivity(`Reference image set: ${result.name}`);
+    if (promptUpdateTimer) {
+      window.clearTimeout(promptUpdateTimer);
+      promptUpdateTimer = null;
+    }
+    session.updateEditParams(currentEditParams());
+    const sizeKb = Math.round(optimized.dataUri.length * 0.75 / 1024);
+    addActivity(`Reference ready: ${optimized.width}×${optimized.height}, ~${sizeKb} KB`);
     toast(`${result.name} selected`);
+    render();
   } catch (error) {
     elements.refWarning.hidden = false;
     elements.refWarning.className = "field-hint danger";
@@ -365,6 +442,7 @@ function collectSettings() {
 function applySettings(settings) {
   if (!settings) return;
   elements.modeSelect.value = settings.mode || REALTIME_ENDPOINTS.characterSwap;
+  state.currentMode = elements.modeSelect.value;
   elements.resolutionSelect.value = String(settings.resolution || 1024);
   elements.promptInput.value = settings.prompt || "";
   elements.promptExpansion.checked = Boolean(settings.enablePromptExpansion);
@@ -412,15 +490,9 @@ async function refreshKeyStatus() {
       : "No key configured yet.";
 }
 
-// $1.00 floor, used two ways: below it the balance display switches to a
-// "running low" warning, and at or below it Start Live is actively blocked
-// client-side. Lucy 2.5 realtime bills at $0.02/sec (confirmed against
-// fal's own pricing page, not assumed) — $1.00 is roughly 50 seconds of
-// remaining runway, chosen so a session can't itself be the thing that
-// pushes the account into overdraft. This is a fixed floor regardless of
-// how much or how little the account is topped up by.
-const MIN_BALANCE_USD = 1.0;
-const FAL_LUCY_REALTIME_RATE_PER_SECOND = 0.02;
+// The shared billing policy contains the current verified rate for each mode.
+// A strict $1 floor is enforced before every connection path and by a local
+// deadline while a session is running; server polling is only a cross-check.
 let lastBalanceWarningShown = false;
 
 function renderBalance() {
@@ -430,9 +502,10 @@ function renderBalance() {
   elements.balanceText.hidden = !hasBalance;
   if (!hasBalance) return;
 
-  const formatted = `${result.balance.toFixed(2)} ${result.currency}`;
-  const isBlocked = result.balance <= MIN_BALANCE_USD;
-  const isLow = !isBlocked && result.balance < MIN_BALANCE_USD * 2;
+  const effectiveBalance = billingMeter.effectiveBalance() ?? result.balance;
+  const formatted = `${effectiveBalance.toFixed(2)} ${result.currency}`;
+  const isBlocked = !billing.canStart(effectiveBalance);
+  const isLow = !isBlocked && effectiveBalance < MIN_BALANCE_USD * 2;
   const status = isBlocked ? "Too low to start a session" : isLow ? "Running low" : "Available";
 
   elements.balanceSummary.className = `balance-summary ${isBlocked ? "danger" : isLow ? "warning" : ""}`.trim();
@@ -443,14 +516,16 @@ function renderBalance() {
   elements.balanceVisibilityToggle.title = state.balanceVisible ? "Hide balance" : "Show balance";
   elements.balanceVisibilityIcon.setAttribute("href", state.balanceVisible ? "#i-eye-off" : "#i-eye");
 
-  const remainingSeconds = Math.max(0, Math.floor(result.balance / FAL_LUCY_REALTIME_RATE_PER_SECOND));
+  const remainingSeconds = billingMeter.remainingSeconds(elements.modeSelect.value)
+    ?? Math.floor(billing.secondsUntilFloor(effectiveBalance, elements.modeSelect.value));
   const hintDetail = isBlocked
     ? `below the $${MIN_BALANCE_USD.toFixed(2)} minimum — top up to start a new session`
     : isLow
       ? `~${remainingSeconds}s of live time left at current rates`
       : status.toLowerCase();
   elements.balanceText.className = `field-hint ${isBlocked ? "danger" : isLow ? "warning" : ""}`.trim();
-  elements.balanceText.textContent = state.balanceVisible ? `Balance: ${formatted} — ${hintDetail}.` : `Balance hidden — ${status.toLowerCase()}.`;
+  const estimateLabel = billingMeter.hasUnpostedSpend() ? "Estimated balance" : "Balance";
+  elements.balanceText.textContent = state.balanceVisible ? `${estimateLabel}: ${formatted} — ${hintDetail}.` : `Balance hidden — ${status.toLowerCase()}.`;
 }
 
 async function refreshBalance({ notifyIfLow = false } = {}) {
@@ -462,26 +537,20 @@ async function refreshBalance({ notifyIfLow = false } = {}) {
     return null;
   });
   if (!result || typeof result.balance !== "number") {
-    state.balance = null;
-    // Unknown balance never blocks Start — the app must still work if
-    // fal's billing endpoint is unreachable or scoped out. If the account
-    // is genuinely out of funds, the actual connect attempt still fails
-    // fast with a precise "insufficient balance" message (see
-    // lucy-realtime-session.ts's tokenProvider handling) rather than a
-    // silent timeout, so nothing unsafe slips through this fallback.
-    state.balanceBlocksStart = false;
+    if (!state.balance) state.balance = null;
     renderBalance();
-    if (session) render(); // refreshes startBtn.disabled, which renderBalance() alone doesn't touch
+    if (session) render();
     return null;
   }
 
   state.balance = result;
+  billingMeter.observeBalance(result.balance);
   const formatted = `${result.balance.toFixed(2)} ${result.currency}`;
-  const isBlocked = result.balance <= MIN_BALANCE_USD;
+  const isBlocked = (billingMeter.remainingSeconds(elements.modeSelect.value) ?? 0) <= 0;
   const isLow = !isBlocked && result.balance < MIN_BALANCE_USD * 2;
   state.balanceBlocksStart = isBlocked;
   renderBalance();
-  if (session) render(); // refreshes startBtn.disabled, which renderBalance() alone doesn't touch
+  if (session) render();
 
   if (notifyIfLow && (isBlocked || isLow) && !lastBalanceWarningShown) {
     lastBalanceWarningShown = true;
@@ -498,6 +567,41 @@ async function refreshBalance({ notifyIfLow = false } = {}) {
   return result;
 }
 
+async function gateSessionStart({ isReconnect }) {
+  if (!state.referenceImageUrl) throw new Error(referenceRequirementText());
+  session.updateEditParams(currentEditParams());
+
+  if (isReconnect && billingMeter.effectiveBalance() != null) {
+    if ((billingMeter.remainingSeconds(elements.modeSelect.value) ?? 0) <= 0) {
+      throw new Error(`Balance is at or below the $${MIN_BALANCE_USD.toFixed(2)} safety floor.`);
+    }
+    startBillingGuard();
+    return;
+  }
+
+  if (!isReconnect) stopBillingGuard();
+
+  const result = await bridge.getBalance().catch((error) => {
+    console.warn("[balance] preflight failed:", error?.message || error);
+    return null;
+  });
+  if (!result || typeof result.balance !== "number") {
+    throw new Error("Could not verify account balance. Check the API key and internet connection, then try again.");
+  }
+
+  billingMeter.observeBalance(result.balance);
+  if ((billingMeter.remainingSeconds(elements.modeSelect.value) ?? 0) <= 0) {
+    state.balance = result;
+    state.balanceBlocksStart = true;
+    renderBalance();
+    throw new Error(`Balance is at or below the $${MIN_BALANCE_USD.toFixed(2)} safety floor.`);
+  }
+  state.balance = result;
+  state.balanceBlocksStart = false;
+  renderBalance();
+  startBillingGuard();
+}
+
 // ---------------------------------------------------------------------
 // OBS output — captures the Result video element to a hidden canvas and
 // streams it to the main process as JPEG frames, which serves them to
@@ -505,23 +609,35 @@ async function refreshBalance({ notifyIfLow = false } = {}) {
 // WebSocket, or virtual camera driver required.
 // ---------------------------------------------------------------------
 
-const OBS_TARGET_FPS = 30;
-const OBS_JPEG_QUALITY = 0.92; // high quality, per the request that this feed not look compressed/soft
+const OBS_TARGET_FPS = 15;
+const OBS_JPEG_QUALITY = 0.9;
 let obsFrameTimer = null;
+let obsFrameEncoding = false;
+let obsEncodeSamples = [];
 
 function startObsFrameLoop() {
   if (obsFrameTimer) return;
   const canvas = elements.obsCanvas;
   const ctx = canvas.getContext("2d");
   obsFrameTimer = window.setInterval(() => {
+    if (obsFrameEncoding) return;
     const video = elements.resultVideo;
     if (!video.videoWidth) return;
+    const startedAt = performance.now();
+    obsFrameEncoding = true;
     if (canvas.width !== video.videoWidth) canvas.width = video.videoWidth;
     if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     canvas.toBlob(
       (blob) => {
+        obsFrameEncoding = false;
         if (!blob) return;
+        obsEncodeSamples.push(performance.now() - startedAt);
+        if (obsEncodeSamples.length === 150) {
+          const averageMs = obsEncodeSamples.reduce((sum, value) => sum + value, 0) / obsEncodeSamples.length;
+          bridge.logEvent("info", `OBS frame pipeline average ${averageMs.toFixed(1)}ms at ${OBS_TARGET_FPS}fps`);
+          obsEncodeSamples = [];
+        }
         blob.arrayBuffer().then((buf) => bridge.obsSendFrame(buf));
       },
       "image/jpeg",
@@ -535,6 +651,8 @@ function stopObsFrameLoop() {
     window.clearInterval(obsFrameTimer);
     obsFrameTimer = null;
   }
+  obsFrameEncoding = false;
+  obsEncodeSamples = [];
 }
 
 // ---------------------------------------------------------------------
@@ -563,7 +681,11 @@ function startLiveTimer() {
   elements.liveTimer.hidden = false;
   elements.liveTimer.textContent = "00:00";
   liveTimerInterval = window.setInterval(() => {
-    elements.liveTimer.textContent = formatLiveDuration(Date.now() - liveStartedAt);
+    const elapsed = formatLiveDuration(Date.now() - liveStartedAt);
+    const remaining = billingMeter.remainingSeconds(elements.modeSelect.value);
+    elements.liveTimer.textContent = remaining == null
+      ? elapsed
+      : `${elapsed} · ${formatLiveDuration(remaining * 1000)} left`;
   }, 1000);
 }
 
@@ -577,37 +699,71 @@ function stopLiveTimer() {
 }
 
 // ---------------------------------------------------------------------
-// Live balance guard — the pre-Start check (MIN_BALANCE_USD, in
-// refreshBalance()) only stops a *new* session from starting on a low
-// balance. It says nothing about a session that was already live before
-// the balance ran down mid-call. This polls the balance while live and
-// force-disconnects at the same $1.00 floor, so a running session can't
-// itself push the account into overdraft.
+// Billing guard. The local deadline is authoritative between server checks,
+// so a delayed billing endpoint cannot let a live call cross the $1 floor.
 // ---------------------------------------------------------------------
 
 const LIVE_BALANCE_POLL_MS = 10000;
 let liveBalancePollTimer = null;
+let localBillingTimer = null;
+let balanceDisconnectInProgress = false;
+let lastBillingTickAt = null;
 
-function startLiveBalanceGuard() {
+function stopForBalance(result) {
+  if (balanceDisconnectInProgress) return;
+  balanceDisconnectInProgress = true;
+  const formatted = result && typeof result.balance === "number"
+    ? `${result.balance.toFixed(2)} ${result.currency}`
+    : `$${MIN_BALANCE_USD.toFixed(2)} safety floor`;
+  addActivity(`Auto-disconnected: available balance reached ${formatted}`);
+  toast(`Disconnected — balance safety floor reached (${formatted})`);
+  stopBillingGuard();
+  clearTransientSessionMedia();
+  session.disconnect();
+  balanceDisconnectInProgress = false;
+}
+
+function recordBillingTick(now = Date.now()) {
+  const snap = session?.getSnapshot();
+  if (lastBillingTickAt != null && ["connecting", "live", "reconnecting"].includes(snap?.state)) {
+    billingMeter.recordSpend((now - lastBillingTickAt) / 1000, elements.modeSelect.value);
+    state.balanceBlocksStart = (billingMeter.remainingSeconds(elements.modeSelect.value) ?? 0) <= 0;
+    renderBalance();
+  }
+  lastBillingTickAt = now;
+}
+
+function startBillingGuard() {
+  if (!localBillingTimer) {
+    lastBillingTickAt = Date.now();
+    localBillingTimer = window.setInterval(() => {
+      recordBillingTick();
+      if (state.balanceBlocksStart) stopForBalance(null);
+    }, 500);
+  }
   if (liveBalancePollTimer) return;
   liveBalancePollTimer = window.setInterval(async () => {
     const result = await bridge.getBalance().catch(() => null);
-    if (!result || typeof result.balance !== "number") return; // unreachable balance check never force-stops a live call
-    if (result.balance <= MIN_BALANCE_USD) {
-      const formatted = `${result.balance.toFixed(2)} ${result.currency}`;
-      addActivity(`Auto-disconnected: balance dropped to ${formatted}, at or below the $${MIN_BALANCE_USD.toFixed(2)} floor`);
-      toast(`Disconnected — balance too low (${formatted})`);
-      clearTransientSessionMedia();
-      session.disconnect();
-    }
+    if (!result || typeof result.balance !== "number") return;
+    billingMeter.observeBalance(result.balance);
+    state.balance = result;
+    state.balanceBlocksStart = (billingMeter.remainingSeconds(elements.modeSelect.value) ?? 0) <= 0;
+    renderBalance();
+    if (state.balanceBlocksStart) stopForBalance(result);
   }, LIVE_BALANCE_POLL_MS);
 }
 
-function stopLiveBalanceGuard() {
+function stopBillingGuard() {
+  recordBillingTick();
   if (liveBalancePollTimer) {
     window.clearInterval(liveBalancePollTimer);
     liveBalancePollTimer = null;
   }
+  if (localBillingTimer) {
+    window.clearInterval(localBillingTimer);
+    localBillingTimer = null;
+  }
+  lastBillingTickAt = null;
 }
 
 function clearTransientSessionMedia() {
@@ -637,14 +793,15 @@ function clearTransientSessionMedia() {
 
   elements.resultVideo.srcObject = null;
 
-  // The activity list is renderer-memory only, but clear it too so no
-  // per-call timeline remains visible after teardown.
+}
+
+function clearActivityForNewSession() {
   elements.activityLog.replaceChildren();
   const item = document.createElement("li");
   const time = document.createElement("time");
   const copy = document.createElement("span");
   time.textContent = "Now";
-  copy.textContent = "Previous session data cleared";
+  copy.textContent = "New session requested";
   item.append(time, copy);
   elements.activityLog.append(item);
   state.activityCount = 1;
@@ -682,26 +839,27 @@ function openSettings() {
   window.setTimeout(() => elements.modeSelect.focus(), 210);
 }
 
+async function requestSessionStart() {
+  const access = await bridge.getCameraAccess();
+  if (access === "denied" || access === "restricted") {
+    state.cameraAccessError = "macOS is blocking camera access for Miko. Open System Settings → Privacy & Security → Camera, turn Miko on, then click Try again.";
+    render();
+    return;
+  }
+  state.cameraAccessError = null;
+  clearActivityForNewSession();
+  session.connect().then(() => refreshCameras());
+}
+
 function bindEvents() {
-  elements.startBtn.addEventListener("click", async () => {
-    // Awaited, not fire-and-forget: a session must never start on a
-    // balance we already know is at/below the floor — catches "out of
-    // credits" before it can push the account into overdraft, rather than
-    // just surfacing it after the fact as a confusing connect failure.
-    const result = await refreshBalance({ notifyIfLow: true });
-    if (result && typeof result.balance === "number" && result.balance <= MIN_BALANCE_USD) {
-      const formatted = `${result.balance.toFixed(2)} ${result.currency}`;
-      toast(`Balance too low to start (${formatted}) — top up at fal.ai/dashboard/billing`);
-      addActivity(`Start blocked: balance ${formatted} is at or below the $${MIN_BALANCE_USD.toFixed(2)} minimum`);
-      return;
-    }
-    session.connect().then(() => refreshCameras());
-  });
+  elements.startBtn.addEventListener("click", requestSessionStart);
   elements.stopBtn.addEventListener("click", () => {
+    stopBillingGuard();
     clearTransientSessionMedia();
     session.disconnect();
   });
-  elements.retryCamera.addEventListener("click", () => session.connect());
+  elements.retryCamera.addEventListener("click", requestSessionStart);
+  elements.openCameraSettings.addEventListener("click", () => bridge.openCameraSettings());
 
   elements.balanceVisibilityToggle.addEventListener("click", () => {
     state.balanceVisible = !state.balanceVisible;
@@ -713,10 +871,30 @@ function bindEvents() {
   elements.cameraSelect.addEventListener("change", () => session.setPreferredDeviceId(elements.cameraSelect.value || undefined));
 
   elements.chooseFileBtn.addEventListener("click", chooseReferenceImage);
-  elements.promptInput.addEventListener("input", () => session.updateEditParams({ prompt: elements.promptInput.value || undefined }));
-  elements.promptExpansion.addEventListener("change", () => session.updateEditParams({ enablePromptExpansion: elements.promptExpansion.checked }));
+  elements.promptInput.addEventListener("input", () => {
+    if (promptUpdateTimer) window.clearTimeout(promptUpdateTimer);
+    promptUpdateTimer = window.setTimeout(() => {
+      promptUpdateTimer = null;
+      session.updateEditParams(currentEditParams());
+      addActivity("Prompt updated");
+    }, 600);
+  });
+  elements.promptExpansion.addEventListener("change", () => {
+    if (promptUpdateTimer) {
+      window.clearTimeout(promptUpdateTimer);
+      promptUpdateTimer = null;
+    }
+    session.updateEditParams(currentEditParams());
+  });
 
   elements.modeSelect.addEventListener("change", () => {
+    stopBillingGuard();
+    clearTransientSessionMedia();
+    const nextMode = elements.modeSelect.value;
+    if (elements.promptInput.value === DEFAULT_PROMPTS[state.currentMode]) {
+      elements.promptInput.value = DEFAULT_PROMPTS[nextMode];
+    }
+    state.currentMode = nextMode;
     updateModeCopy();
     attachSession(elements.modeSelect.value);
   });
@@ -757,6 +935,8 @@ function bindEvents() {
     }
   });
   elements.openFalDashboard.addEventListener("click", () => bridge.openExternal("https://fal.ai/dashboard/keys"));
+  elements.topUpBalance.addEventListener("click", () => bridge.openExternal("https://fal.ai/dashboard/billing"));
+  elements.openLogsFolder.addEventListener("click", () => bridge.openLogsFolder());
 
   elements.obsToggle.addEventListener("change", toggleObsOutput);
   elements.copyObsUrl.addEventListener("click", async () => {
@@ -767,9 +947,18 @@ function bindEvents() {
       toast(`Could not copy URL: ${error?.message || error}`);
     }
   });
+  elements.sourceVideo.addEventListener("resize", render);
+  elements.resultVideo.addEventListener("resize", render);
 
   $$("[data-window-action]").forEach((button) => button.addEventListener("click", () => bridge.windowControl(button.dataset.windowAction)));
   navigator.mediaDevices?.addEventListener?.("devicechange", () => refreshCameras());
+  bridge.onSystemSuspend((reason) => {
+    stopBillingGuard();
+    clearTransientSessionMedia();
+    session?.hardStop();
+    addActivity(`Session stopped because the system ${reason}`);
+    toast(`Session stopped: system ${reason}`);
+  });
 }
 
 // ---------------------------------------------------------------------
@@ -791,11 +980,12 @@ async function init() {
   await refreshKeyStatus();
   void refreshBalance({ notifyIfLow: true });
 
-  // Show the camera right away (a "lobby" preview) so the user can check
-  // framing/lighting and pick a device before committing to a live,
-  // concurrency-limited session — Start Live only needs to open the fal.ai
-  // connection at that point, reusing this same stream.
-  void session.previewCamera();
+  const cameraAccess = await bridge.getCameraAccess();
+  if (cameraAccess === "denied" || cameraAccess === "restricted") {
+    state.cameraAccessError = "macOS is blocking camera access for Miko. Open System Settings → Privacy & Security → Camera, turn Miko on, then click Try again.";
+    render();
+  }
+
 }
 
 init().catch((error) => {
@@ -803,4 +993,7 @@ init().catch((error) => {
   toast(`Miko could not finish initializing: ${error?.message || error}`);
 });
 
-window.addEventListener("beforeunload", clearTransientSessionMedia);
+window.addEventListener("beforeunload", () => {
+  stopBillingGuard();
+  clearTransientSessionMedia();
+});

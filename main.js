@@ -1,11 +1,16 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, session, shell, safeStorage } = require("electron");
-const { readFile, writeFile, mkdir } = require("node:fs/promises");
+const { app, BrowserWindow, dialog, ipcMain, Menu, powerMonitor, session, shell, safeStorage, systemPreferences } = require("electron");
+const { appendFile, copyFile, mkdir, readFile, stat, writeFile } = require("node:fs/promises");
+const { randomBytes, timingSafeEqual } = require("node:crypto");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const http = require("node:http");
 
 const isMac = process.platform === "darwin";
 let mainWindow = null;
+const appRootUrl = pathToFileURL(`${__dirname}${path.sep}`).toString();
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
 
 // Kept in sync with lib/lucy-config.ts (that file can't be required directly
 // from plain CommonJS main.js, so these two constants are duplicated here).
@@ -19,12 +24,16 @@ const TOKEN_DURATION_SECONDS = 120;
 // fidelity-focused phrasing the master prompt itself recommended for
 // keeping swaps literal to the reference rather than drifting. Once the
 // user saves their own prompt (even an empty one), this no longer applies.
-const DEFAULT_PROMPT =
-  "Replace the entire person in the live camera feed with the exact person or character shown in the reference image, including their face, facial features, hair, skin tone, body appearance, clothing, colors, materials, and silhouette. Keep the same identity and character design stable and consistent across every frame. Preserve the live person's pose, expression, hand motion, camera angle, lighting, and background. Do not invent, blend, or morph facial features, clothing, or identity.";
+const DEFAULT_PROMPTS = {
+  [REALTIME_ENDPOINTS.characterSwap]:
+    "Replace the entire person in the live camera feed with the exact person or character shown in the reference image, including their face, facial features, hair, skin tone, body appearance, clothing, colors, materials, and silhouette. Keep the same identity and character design stable and consistent across every frame. Preserve the live person's pose, expression, hand motion, camera angle, lighting, and background. Do not invent, blend, or morph facial features, clothing, or identity.",
+  [REALTIME_ENDPOINTS.virtualTryOn]:
+    "Dress the person in the live camera feed in the exact garment shown in the reference image, matching its color, material, pattern, fit, and details. Keep the person's face, identity, pose, body shape, and background unchanged."
+};
 
 function isTrustedSender(event) {
   const senderUrl = event.senderFrame?.url || "";
-  return senderUrl.startsWith(pathToFileURL(__dirname).toString());
+  return senderUrl.startsWith(appRootUrl);
 }
 
 // ---------------------------------------------------------------------
@@ -37,13 +46,23 @@ function isTrustedSender(event) {
 const OBS_DEFAULT_PORT = 5590;
 let obsServer = null;
 let obsPort = null;
+let obsToken = null;
 let latestFrame = null;
 const obsClients = new Set();
 
-const OBS_PAGE_HTML =
-  "<!doctype html><html><head><meta charset=\"utf-8\">" +
+function obsPageHtml(token) {
+  return "<!doctype html><html><head><meta charset=\"utf-8\">" +
+  "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src 'self'\">" +
   "<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}img{width:100%;height:100%;object-fit:contain;display:block}</style>" +
-  "</head><body><img src=\"/stream.mjpeg\" alt=\"\" /></body></html>";
+  `</head><body><img src="/stream.mjpeg?token=${encodeURIComponent(token)}" alt="" /></body></html>`;
+}
+
+function validObsToken(candidate) {
+  if (!obsToken || typeof candidate !== "string") return false;
+  const expected = Buffer.from(obsToken);
+  const actual = Buffer.from(candidate);
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
 
 function writeMjpegFrame(res, buffer) {
   res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${buffer.length}\r\n\r\n`);
@@ -54,11 +73,24 @@ function writeMjpegFrame(res, buffer) {
 function startObsServer(port) {
   return new Promise((resolve, reject) => {
     if (obsServer) {
-      resolve({ port: obsPort });
+      resolve({ port: obsPort, token: obsToken });
       return;
     }
+    const token = randomBytes(24).toString("base64url");
     const server = http.createServer((req, res) => {
-      if (req.url === "/stream.mjpeg") {
+      const expectedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+      if (!expectedHosts.has(req.headers.host || "")) {
+        res.writeHead(403, { "Cache-Control": "no-store" });
+        res.end("Forbidden");
+        return;
+      }
+      const requestUrl = new URL(req.url || "/", `http://${req.headers.host}`);
+      if (!validObsToken(requestUrl.searchParams.get("token"))) {
+        res.writeHead(401, { "Cache-Control": "no-store" });
+        res.end("Unauthorized");
+        return;
+      }
+      if (requestUrl.pathname === "/stream.mjpeg") {
         res.writeHead(200, {
           "Content-Type": "multipart/x-mixed-replace; boundary=frame",
           "Cache-Control": "no-cache, no-store, must-revalidate",
@@ -67,9 +99,9 @@ function startObsServer(port) {
         obsClients.add(res);
         if (latestFrame) writeMjpegFrame(res, latestFrame);
         req.on("close", () => obsClients.delete(res));
-      } else if (req.url === "/" || req.url === "/index.html") {
-        res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(OBS_PAGE_HTML);
+      } else if (requestUrl.pathname === "/" || requestUrl.pathname === "/index.html") {
+        res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
+        res.end(obsPageHtml(token));
       } else {
         res.writeHead(404);
         res.end();
@@ -78,12 +110,14 @@ function startObsServer(port) {
     server.once("error", (err) => {
       obsServer = null;
       obsPort = null;
+      obsToken = null;
       reject(err);
     });
     server.listen(port, "127.0.0.1", () => {
       obsServer = server;
       obsPort = port;
-      resolve({ port });
+      obsToken = token;
+      resolve({ port, token });
     });
   });
 }
@@ -95,6 +129,7 @@ async function stopObsServer() {
   await new Promise((resolve) => obsServer.close(resolve));
   obsServer = null;
   obsPort = null;
+  obsToken = null;
   latestFrame = null;
 }
 
@@ -112,6 +147,41 @@ function sanitizeSettings(value) {
 
 function settingsPath() {
   return path.join(app.getPath("userData"), "settings.json");
+}
+
+// Small rotating lifecycle log for installed-build diagnostics. It contains
+// text events only—never video frames, reference-image data, or API keys.
+const MAX_LOG_BYTES = 1024 * 1024;
+let logQueue = Promise.resolve();
+
+function redactLogText(value) {
+  return String(value || "")
+    .replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=_-]+/gi, "[image omitted]")
+    .replace(/\bKey\s+[A-Za-z0-9_.:-]+/gi, "Key [redacted]")
+    .replace(/[0-9a-f-]{36}:[0-9a-f]{32}/gi, "[key redacted]")
+    .replace(/fal_jwt_token=[^&\s]+/gi, "fal_jwt_token=[redacted]")
+    .slice(0, 1200);
+}
+
+function logPath() {
+  return path.join(app.getPath("userData"), "logs", "miko.log");
+}
+
+function logAppEvent(level, message) {
+  const safeLevel = ["info", "warn", "error"].includes(level) ? level : "info";
+  const line = `${new Date().toISOString()} ${safeLevel.toUpperCase()} ${redactLogText(message)}\n`;
+  logQueue = logQueue.then(async () => {
+    const filePath = logPath();
+    await mkdir(path.dirname(filePath), { recursive: true });
+    const size = await stat(filePath).then((entry) => entry.size).catch(() => 0);
+    if (size + Buffer.byteLength(line) > MAX_LOG_BYTES) {
+      await copyFile(`${filePath}.2`, `${filePath}.3`).catch(() => {});
+      await copyFile(`${filePath}.1`, `${filePath}.2`).catch(() => {});
+      await copyFile(filePath, `${filePath}.1`).catch(() => {});
+      await writeFile(filePath, "", "utf8");
+    }
+    await appendFile(filePath, line, "utf8");
+  }).catch((error) => console.error("Unable to write application log", error));
 }
 
 // ---------------------------------------------------------------------
@@ -169,11 +239,21 @@ async function loadFalKey() {
 }
 
 function createMenu() {
+  const viewSubmenu = [
+    { role: "resetZoom" },
+    { role: "zoomIn" },
+    { role: "zoomOut" },
+    { type: "separator" },
+    { role: "togglefullscreen" }
+  ];
+  if (process.argv.includes("--dev")) {
+    viewSubmenu.unshift({ role: "reload" }, { role: "forceReload" }, { role: "toggleDevTools" }, { type: "separator" });
+  }
   const template = [
     ...(isMac ? [{ role: "appMenu" }] : []),
     { role: "fileMenu" },
     { role: "editMenu" },
-    { role: "viewMenu" },
+    { label: "View", submenu: viewSubmenu },
     { role: "windowMenu" }
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
@@ -195,7 +275,8 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      webSecurity: true
+      webSecurity: true,
+      backgroundThrottling: false
     }
   });
 
@@ -211,19 +292,33 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
+if (hasSingleInstanceLock) app.on("second-instance", () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
+
+if (hasSingleInstanceLock) app.whenReady().then(() => {
   createMenu();
 
   session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
-    const trusted = webContents?.getURL().startsWith(pathToFileURL(__dirname).toString());
+    const trusted = webContents?.getURL().startsWith(appRootUrl);
     return Boolean(trusted && permission === "media");
   });
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    const trusted = webContents.getURL().startsWith(pathToFileURL(__dirname).toString());
+    const trusted = webContents.getURL().startsWith(appRootUrl);
     callback(trusted && permission === "media");
   });
 
   createWindow();
+  const suspendSession = (reason) => {
+    logAppEvent("info", `Session stopped because the system ${reason}`);
+    mainWindow?.webContents.send("app:system-suspend", reason);
+  };
+  powerMonitor.on("suspend", () => suspendSession("suspended"));
+  powerMonitor.on("lock-screen", () => suspendSession("screen locked"));
+  logAppEvent("info", `Miko ${app.getVersion()} started on ${process.platform}/${process.arch}`);
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -234,6 +329,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  logAppEvent("info", "Miko is quitting");
   void stopObsServer();
 });
 
@@ -275,7 +371,7 @@ ipcMain.handle("settings:load", async (event) => {
     return sanitizeSettings(JSON.parse(json));
   } catch (error) {
     if (error.code !== "ENOENT") console.error("Unable to load settings", error);
-    return sanitizeSettings({ prompt: DEFAULT_PROMPT });
+    return sanitizeSettings({ prompt: DEFAULT_PROMPTS[REALTIME_ENDPOINTS.characterSwap] });
   }
 });
 
@@ -300,6 +396,31 @@ ipcMain.handle("app:info", (event) => {
     architecture: process.arch,
     userDataPath: app.getPath("userData")
   };
+});
+
+ipcMain.on("app:log", (event, level, message) => {
+  if (!isTrustedSender(event)) return;
+  logAppEvent(level, message);
+});
+
+ipcMain.handle("media:camera-access", (event) => {
+  if (!isTrustedSender(event)) return "unknown";
+  return isMac ? systemPreferences.getMediaAccessStatus("camera") : "unknown";
+});
+
+ipcMain.handle("media:open-camera-settings", async (event) => {
+  if (!isTrustedSender(event) || !isMac) return false;
+  await shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Camera");
+  return true;
+});
+
+ipcMain.handle("log:open-folder", async (event) => {
+  if (!isTrustedSender(event)) return false;
+  const folder = path.dirname(logPath());
+  await mkdir(folder, { recursive: true });
+  const error = await shell.openPath(folder);
+  if (error) throw new Error(error);
+  return true;
 });
 
 // ---------------------------------------------------------------------
@@ -408,22 +529,49 @@ ipcMain.handle("fal:get-token", async (event, requestedApp) => {
     // connection reason buried in .cause — surface that instead of the
     // generic wrapper message, or the user just sees "fetch failed".
     const cause = err && err.cause ? `: ${err.cause.code || err.cause.message || err.cause}` : "";
-    throw new Error(`Could not reach fal.ai to request a token (network error${cause}).`);
+    throw new Error(`Could not reach the realtime service to request a token (network error${cause}).`);
   }
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    throw new Error(`fal token request failed (${response.status}): ${detail}`);
+    logAppEvent("error", `Realtime token request failed (${response.status}): ${detail}`);
+    if (/exhausted balance|insufficient (credit|balance|fund)|payment required/i.test(detail)) {
+      throw new Error("Account balance is exhausted — top up to continue.");
+    }
+    if (response.status === 401 || response.status === 403) {
+      throw new Error("Authentication failed — check the API key in Settings.");
+    }
+    if (response.status === 429) {
+      throw new Error("The account is temporarily rate limited. Wait, then try again.");
+    }
+    throw new Error(`Realtime authorization failed (${response.status}).`);
   }
 
   let data;
   try {
     data = await response.json();
   } catch (error) {
-    throw new Error(`fal.ai returned an unreadable (non-JSON) token response: ${error.message}`);
+    throw new Error(`The realtime service returned an unreadable token response: ${error.message}`);
   }
   if (typeof data === "string") return data;
   if (data && typeof data.detail === "string") return data.detail; // old proxy wrapping, per the SDK's own defensive check
   throw new Error(`Unexpected token response shape: ${JSON.stringify(data)}`);
+});
+
+ipcMain.handle("fal:delete-request-payload", async (event, requestId) => {
+  if (!isTrustedSender(event)) throw new Error("Untrusted request.");
+  const safeRequestId = String(requestId || "");
+  if (!/^[A-Za-z0-9-]{8,100}$/.test(safeRequestId)) throw new Error("Invalid request ID.");
+  const key = await loadFalKey();
+  if (!key) throw new Error("No API key configured.");
+  const response = await fetch(`https://api.fal.ai/v1/models/requests/${encodeURIComponent(safeRequestId)}/payloads`, {
+    method: "DELETE",
+    headers: { Authorization: `Key ${key}`, "Idempotency-Key": `miko-${safeRequestId}` }
+  });
+  if (!response.ok && response.status !== 404) {
+    throw new Error(`Request-payload deletion failed (${response.status}).`);
+  }
+  logAppEvent("info", `Deleted remote request payload ${safeRequestId}`);
+  return { ok: true };
 });
 
 ipcMain.handle("shell:open-external", (event, url) => {
@@ -435,8 +583,9 @@ ipcMain.handle("obs:start", async (event, requestedPort) => {
   if (!isTrustedSender(event)) throw new Error("Untrusted request.");
   const port = Number(requestedPort) || OBS_DEFAULT_PORT;
   try {
-    const { port: boundPort } = await startObsServer(port);
-    return { url: `http://127.0.0.1:${boundPort}/` };
+    const { port: boundPort, token } = await startObsServer(port);
+    logAppEvent("info", `OBS output started on localhost port ${boundPort}`);
+    return { url: `http://127.0.0.1:${boundPort}/?token=${encodeURIComponent(token)}` };
   } catch (err) {
     throw new Error(
       err.code === "EADDRINUSE"
@@ -449,11 +598,14 @@ ipcMain.handle("obs:start", async (event, requestedPort) => {
 ipcMain.handle("obs:stop", async (event) => {
   if (!isTrustedSender(event)) return;
   await stopObsServer();
+  logAppEvent("info", "OBS output stopped");
 });
 
 ipcMain.handle("obs:status", (event) => {
   if (!isTrustedSender(event)) return { running: false };
-  return obsServer ? { running: true, url: `http://127.0.0.1:${obsPort}/` } : { running: false };
+  return obsServer
+    ? { running: true, url: `http://127.0.0.1:${obsPort}/?token=${encodeURIComponent(obsToken)}` }
+    : { running: false };
 });
 
 // Hot path — called ~15x/second while OBS output is on, so this is a

@@ -2,6 +2,15 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("deepLiveCam", {
   appInfo: () => ipcRenderer.invoke("app:info"),
+  logEvent: (level, message) => ipcRenderer.send("app:log", level, message),
+  onSystemSuspend: (callback) => {
+    const listener = (_event, reason) => callback(reason);
+    ipcRenderer.on("app:system-suspend", listener);
+    return () => ipcRenderer.removeListener("app:system-suspend", listener);
+  },
+  getCameraAccess: () => ipcRenderer.invoke("media:camera-access"),
+  openCameraSettings: () => ipcRenderer.invoke("media:open-camera-settings"),
+  openLogsFolder: () => ipcRenderer.invoke("log:open-folder"),
   pickMedia: (kind) => ipcRenderer.invoke("dialog:pick-media", kind),
   loadSettings: () => ipcRenderer.invoke("settings:load"),
   saveSettings: (settings) => ipcRenderer.invoke("settings:save", settings),
@@ -10,6 +19,7 @@ contextBridge.exposeInMainWorld("deepLiveCam", {
   getBalance: () => ipcRenderer.invoke("fal:get-balance"),
   saveKey: (key) => ipcRenderer.invoke("fal:save-key", key),
   getToken: (app) => ipcRenderer.invoke("fal:get-token", app),
+  deleteRequestPayload: (requestId) => ipcRenderer.invoke("fal:delete-request-payload", requestId),
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
   obsStart: (port) => ipcRenderer.invoke("obs:start", port),
   obsStop: () => ipcRenderer.invoke("obs:stop"),

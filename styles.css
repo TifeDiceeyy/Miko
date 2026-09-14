@@ -221,6 +221,7 @@ html[data-platform="darwin"] .sidebar { padding-top: 50px; }
 .status-chip.reconnecting i,
 .system-state.reconnecting i { background: var(--warning); }
 .live-timer { display: inline-flex; align-items: center; min-height: 30px; padding: 0 10px; border-radius: 999px; background: var(--surface); color: var(--text-soft); font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+.live-timer[hidden] { display: none; }
 .icon-btn { width: 32px; height: 32px; display: grid; place-items: center; padding: 0; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--text-soft); cursor: pointer; }
 .icon-btn:hover { background: var(--surface-hover); color: var(--text); }
 .icon-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
