@@ -34,8 +34,8 @@ edit. **Function names are authoritative, line numbers are hints.**
   - The Windows installer is the one CI built on Windows from that commit,
     where all 85 tests passed with none skipped.
   - The uploaded files match `SHA256SUMS.txt`.
-  - v1.2.0 (`e08c1d1`) is still published; removing it is the owner's
-    call. v1.1.0 (`4fe4707`) was removed with its tag on 2026-09-15 at
+  - v1.2.0 (`e08c1d1`) was removed with its tag on 2026-09-15 at the
+    owner's request; v1.3.0 is the only published release. v1.1.0 (`4fe4707`) was removed with its tag on 2026-09-15 at
     the owner's request (0 downloads).
   - v1.0.2 (`b490ff8`) was removed with its tag on 2026-09-14 at the
     owner's request. It had 0 downloads.
