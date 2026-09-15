@@ -47,3 +47,14 @@ test("today's Decart spend adds up, resets the next day, and counts down the dai
   now = new Date(2026, 8, 16, 0, 0, 1).getTime();
   assert.equal(spend.today(), 0, "a new day starts from zero");
 });
+
+test("the daily limit as typed: empty or invalid means the default, only 0 turns it off, capped at $1000", () => {
+  assert.equal(billing.parseDailyLimit("", 5), 5);
+  assert.equal(billing.parseDailyLimit(undefined, 5), 5);
+  assert.equal(billing.parseDailyLimit("abc", 5), 5);
+  assert.equal(billing.parseDailyLimit("-5", 5), 5, "a negative typo can't turn the limit off");
+  assert.equal(billing.parseDailyLimit("0", 5), 0);
+  assert.equal(billing.parseDailyLimit(0, 5), 0);
+  assert.equal(billing.parseDailyLimit("7.25", 5), 7.25);
+  assert.equal(billing.parseDailyLimit("5000", 5), 1000);
+});

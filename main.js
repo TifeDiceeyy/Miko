@@ -63,10 +63,10 @@ async function writeObsPageFile() {
 
 const DEFAULT_DECART_DAILY_LIMIT = 5;
 
+// Same parsing as the page (lib/billing-policy.js): a typo can't turn the
+// limit off; only exactly 0 does.
 function sanitizeDailyLimit(value) {
-  if (value === undefined || value === null || value === "") return DEFAULT_DECART_DAILY_LIMIT;
-  const number = Number(value);
-  return Number.isFinite(number) ? Math.min(1000, Math.max(0, Math.round(number * 100) / 100)) : DEFAULT_DECART_DAILY_LIMIT;
+  return require("./lib/billing-policy").parseDailyLimit(value, DEFAULT_DECART_DAILY_LIMIT);
 }
 
 function sanitizeSettings(value) {

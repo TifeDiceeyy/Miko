@@ -456,7 +456,8 @@ fal.ai's public docs pages.
     - No balance API: Start is gated on a daily spend limit (setting
       `decartDailyLimit`, default $5, `DailySpend` in billing-policy.js)
       and `GET /v1/realtime/quota`. Decart spend never touches fal's
-      `BillingMeter`.
+      `BillingMeter`, and is counted only while the result is live, since
+      Decart bills active generation (fal's is counted from connecting).
     - The CSP adds `api.decart.ai`, `api3.decart.ai`, `lk.decart.ai` and
       `*.lkc.decart.ai`. The network check probes `api3.decart.ai` for
       Decart.

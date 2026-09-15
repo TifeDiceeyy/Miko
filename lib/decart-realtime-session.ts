@@ -87,6 +87,7 @@ export class DecartRealtimeSession {
   private lastPushed = "";
   private steps: { attempt: number; startedAt: number; reached: Map<Step, number> } | null = null;
   private billedSeconds = 0;
+  private billedReported = false;
   private endedReason: string | null = null;
   private lastQueue = "";
   private trackKindsSeen = new Set<string>();
@@ -162,6 +163,7 @@ export class DecartRealtimeSession {
     aborted.catch(() => {});
     const race = <T>(promise: Promise<T>) => Promise.race([promise, aborted]);
     this.billedSeconds = 0;
+    this.billedReported = false;
     this.endedReason = null;
     this.lastQueue = "";
     this.trackKindsSeen = new Set();
@@ -415,7 +417,10 @@ export class DecartRealtimeSession {
     const client = this.client;
     this.client = null;
     if (client) this.safeDisconnect(client);
-    if (this.billedSeconds > 0) {
+    // Once per session: later stops (quitting, switching supplier) must not
+    // repeat an earlier session's count.
+    if (this.billedSeconds > 0 && !this.billedReported) {
+      this.billedReported = true;
       this.bridge.logEvent?.("info", `The service reported ${Math.round(this.billedSeconds)} s of generation for this session`);
     }
   }

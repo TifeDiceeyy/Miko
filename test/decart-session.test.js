@@ -330,3 +330,16 @@ test("the log shows the queue, the start of generation and when each output trac
   assert.ok(messages.includes("Service connection steps: webrtc-handshake 812 ms · publish-local-track 95 ms"));
   session.hardStop();
 });
+
+test("the service's generation count is logged once per session, not again on later stops", async () => {
+  installBrowserMocks();
+  const { sdk, log } = fakeSdk();
+  const bridge = fakeBridge();
+  const session = newSession({ sdk, bridge });
+  await session.connect();
+  log.connects[0].realtime.emit("generationTick", { seconds: 5 });
+  session.disconnect();
+  session.hardStop();
+  session.hardStop();
+  assert.equal(bridge.logs.filter(({ message }) => message === "The service reported 5 s of generation for this session").length, 1);
+});

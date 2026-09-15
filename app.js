@@ -194,12 +194,9 @@ function billingModel(model = selectedModel()) {
   return presets.backendModel(model, selectedSupplier());
 }
 
-// Empty means the default; 0 means no daily limit.
+// Empty or invalid means the default; exactly 0 means no daily limit.
 function dailyLimit() {
-  const raw = elements.decartDailyLimit.value;
-  if (raw === "") return DEFAULT_DECART_DAILY_LIMIT;
-  const value = Number(raw);
-  return Number.isFinite(value) && value > 0 ? value : 0;
+  return billing.parseDailyLimit(elements.decartDailyLimit.value, DEFAULT_DECART_DAILY_LIMIT);
 }
 
 // Whether the supplier's stop point is reached: fal's $1 balance floor, or
@@ -415,7 +412,8 @@ function render() {
   elements.stopBtn.disabled = snap.state === "idle";
   elements.modelSelect.disabled = isLive || isBusy;
   elements.taskSelect.disabled = isLive || isBusy;
-  elements.resolutionSelect.disabled = isLive || isBusy;
+  // Decart runs at its model's own 1280×720; the ceiling is a fal setting.
+  elements.resolutionSelect.disabled = isLive || isBusy || isDecart();
   elements.cameraSelect.disabled = isLive || isBusy;
   elements.keySupplier.disabled = isLive || isBusy;
   $("span", elements.startBtn).textContent = state.checkingNetwork ? "Checking network…" : isBusy ? "Connecting…" : isLive ? "Live" : "Start Live";
@@ -1019,7 +1017,12 @@ function stopForDailyLimit() {
 
 function recordBillingTick(now = Date.now()) {
   const snap = session?.getSnapshot();
-  if (lastBillingTickAt != null && ["connecting", "live"].includes(snap?.state)) {
+  // fal bills from the start of a session; Decart only while it's generating,
+  // which is when the result is live.
+  const billable = state.sessionRecord?.supplier === "decart"
+    ? snap?.state === "live"
+    : ["connecting", "live"].includes(snap?.state);
+  if (lastBillingTickAt != null && billable) {
     const seconds = (now - lastBillingTickAt) / 1000;
     // Decart spend goes to the daily total, never into fal's balance meter.
     if (state.sessionRecord?.supplier === "decart") dailySpend.add(seconds * billing.rateForEndpoint(state.sessionRecord.backend));
