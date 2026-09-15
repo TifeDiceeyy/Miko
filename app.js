@@ -104,6 +104,7 @@ const elements = {
   keySupplierHint: $("#keySupplierHint"),
   decartLimitRow: $("#decartLimitRow"),
   decartDailyLimit: $("#decartDailyLimit"),
+  promptLimitHint: $("#promptLimitHint"),
   openLogsFolder: $("#openLogsFolder"),
   activityLog: $("#activityLog"),
   activityCount: $("#activityCount"),
@@ -300,6 +301,25 @@ function renderSupplierCopy() {
     ? `Decart: Miko Pro ${formatRate(presets.MODELS.pro)}, Miko Lite ${formatRate(presets.MODELS.lite)}, billed per second of generation. Each session is capped at 10 minutes.`
     : `fal.ai: Miko Pro ${formatRate(presets.MODELS.pro)}, Miko Lite ${formatRate(presets.MODELS.lite)}.`;
   labelModelOptions();
+}
+
+// Decart rejects prompts over about 750 characters, so while it's the supplier
+// Miko counts and warns before anything is sent.
+function promptTooLong() {
+  return isDecart() && elements.promptInput.value.length > presets.DECART_PROMPT_MAX_CHARS;
+}
+
+function renderPromptLimit() {
+  const hint = elements.promptLimitHint;
+  hint.hidden = !isDecart();
+  if (hint.hidden) return;
+  const count = elements.promptInput.value.length;
+  const max = presets.DECART_PROMPT_MAX_CHARS;
+  const over = count > max;
+  hint.className = `field-hint ${over ? "warning" : ""}`.trim();
+  hint.textContent = over
+    ? `${count} / ${max} characters — too long for this key supplier. Shorten it to start or to apply it.`
+    : `${count} / ${max} characters`;
 }
 
 function persistSettingsQuietly() {
@@ -608,6 +628,9 @@ function applySettings(settings) {
   elements.keySupplier.value = presets.resolveSupplier(settings.keySupplier);
   elements.decartDailyLimit.value = String(settings.decartDailyLimit ?? DEFAULT_DECART_DAILY_LIMIT);
   renderSupplierCopy();
+  // A prompt still at a default follows the supplier's own wording.
+  elements.promptInput.value = presets.promptFor(elements.promptInput.value, selectedTask(), selectedSupplier());
+  renderPromptLimit();
   syncTaskOptionsForModel();
   updateSelectionCopy();
 }
@@ -633,10 +656,11 @@ function syncTaskOptionsForModel() {
     characterOption.hidden = isLite;
   }
   if (isLite && selectedTask() === "character") {
-    const nextPrompt = presets.promptAfterTaskChange(elements.promptInput.value, "character", "outfit");
+    const nextPrompt = presets.promptAfterTaskChange(elements.promptInput.value, "character", "outfit", selectedSupplier());
     elements.taskSelect.value = "outfit";
     elements.promptInput.value = nextPrompt;
     state.currentTask = "outfit";
+    renderPromptLimit();
   }
 }
 
@@ -810,6 +834,9 @@ async function refreshBalance({ notifyIfLow = false } = {}) {
 // on the account's live-session quota instead. Each session's token also
 // carries a 10-minute cap (lib/decart-api.js).
 async function gateDecartStart() {
+  if (promptTooLong()) {
+    throw new Error(`The prompt is ${elements.promptInput.value.length} characters, but this key supplier accepts about ${presets.DECART_PROMPT_MAX_CHARS}. Shorten it, then press Start.`);
+  }
   if (liveTimeExhausted()) {
     state.balanceBlocksStart = true;
     renderBalance();
@@ -1260,9 +1287,12 @@ function bindEvents() {
 
   elements.chooseFileBtn.addEventListener("click", chooseReferenceImage);
   elements.promptInput.addEventListener("input", () => {
+    renderPromptLimit();
     if (promptUpdateTimer) window.clearTimeout(promptUpdateTimer);
     promptUpdateTimer = window.setTimeout(() => {
       promptUpdateTimer = null;
+      // Too long for the supplier: not sent; the hint under the prompt says why.
+      if (promptTooLong()) return;
       session.updateEditParams(currentEditParams());
       addActivity("Prompt updated");
     }, 600);
@@ -1289,12 +1319,13 @@ function bindEvents() {
   });
   elements.taskSelect.addEventListener("change", () => {
     const nextTask = selectedTask();
-    const nextPrompt = presets.promptAfterTaskChange(elements.promptInput.value, state.currentTask, nextTask);
+    const nextPrompt = presets.promptAfterTaskChange(elements.promptInput.value, state.currentTask, nextTask, selectedSupplier());
     if (nextPrompt !== elements.promptInput.value) {
       elements.promptInput.value = nextPrompt;
       session.updateEditParams(currentEditParams());
     }
     state.currentTask = nextTask;
+    renderPromptLimit();
     updateSelectionCopy();
     render();
   });
@@ -1342,6 +1373,9 @@ function bindEvents() {
     clearTransientSessionMedia();
     renderSupplierCopy();
     updateSelectionCopy();
+    // A prompt still at a default switches to the new supplier's wording.
+    elements.promptInput.value = presets.promptFor(elements.promptInput.value, selectedTask(), selectedSupplier());
+    renderPromptLimit();
     await attachSessionSafely();
     await refreshKeyStatus();
     await refreshBalance();

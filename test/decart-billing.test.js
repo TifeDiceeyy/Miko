@@ -58,3 +58,25 @@ test("the daily limit as typed: empty or invalid means the default, only 0 turns
   assert.equal(billing.parseDailyLimit("7.25", 5), 7.25);
   assert.equal(billing.parseDailyLimit("5000", 5), 1000);
 });
+
+test("Decart gets its own default prompts in Decart's recommended wording; fal's stay as they were", () => {
+  const { character, outfit } = presets.DECART_DEFAULT_PROMPTS;
+  assert.match(character, /^Replace the character in the video with .*from the reference image\./);
+  assert.match(outfit, /^Substitute the outfit with /);
+  assert.equal(presets.DECART_PROMPT_MAX_CHARS, 750);
+  for (const prompt of [character, outfit]) assert.ok(prompt.length <= presets.DECART_PROMPT_MAX_CHARS, `${prompt.length} characters`);
+  assert.equal(presets.defaultPrompt("character", "fal"), presets.DEFAULT_PROMPTS.character);
+  assert.equal(presets.defaultPrompt("outfit", "decart"), outfit);
+});
+
+test("a prompt still at a default follows the supplier and task; one the user wrote is kept", () => {
+  const fal = presets.DEFAULT_PROMPTS;
+  const decart = presets.DECART_DEFAULT_PROMPTS;
+  assert.equal(presets.promptFor(fal.character, "character", "decart"), decart.character);
+  assert.equal(presets.promptFor(decart.character, "character", "fal"), fal.character);
+  assert.equal(presets.promptFor(fal.outfit, "outfit", "decart"), decart.outfit);
+  assert.equal(presets.promptFor("Turn me into a knight", "character", "decart"), "Turn me into a knight");
+  assert.equal(presets.promptFor("", "character", "decart"), "", "an empty prompt stays empty");
+  assert.equal(presets.promptAfterTaskChange(decart.character, "character", "outfit", "decart"), decart.outfit);
+  assert.equal(presets.promptAfterTaskChange(fal.character, "character", "outfit"), fal.outfit, "fal unchanged by default");
+});

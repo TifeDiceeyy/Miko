@@ -461,6 +461,12 @@ fal.ai's public docs pages.
     - The CSP adds `api.decart.ai`, `api3.decart.ai`, `lk.decart.ai` and
       `*.lkc.decart.ai`. The network check probes `api3.decart.ai` for
       Decart.
+    - Prompts: Decart has its own defaults (`DECART_DEFAULT_PROMPTS`),
+      worded per its guides ("Replace the character in the video with …
+      from the reference image", "Substitute the outfit with …"). A prompt
+      still at any default follows the supplier and task (`promptFor`).
+      Decart rejects prompts over about 750 characters, so Miko counts,
+      blocks Start and holds back live edits past `DECART_PROMPT_MAX_CHARS`.
     - Not yet run against the live service (needs the owner's Decart key
       and OK): `DECART_PLAN.md` L1–L6.
 

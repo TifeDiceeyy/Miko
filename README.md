@@ -124,7 +124,9 @@ already spent real billed money.
 With a Decart key, Miko Pro runs Decart's `lucy-2.5` and Miko Lite runs
 `lucy-vton-3.5`, both at $0.02/second, straight from Decart instead of
 through fal. The Decart connection is a separate module that's only loaded
-when Decart is the supplier; see `DECART_PLAN.md`.
+when Decart is the supplier; see `DECART_PLAN.md`. Decart gets its own default
+prompts, worded the way Decart's prompting guides recommend, and Miko warns
+when a prompt is over Decart's limit of about 750 characters.
 
 Before each Start, Miko runs a quick connection check on the user's own
 machine:
