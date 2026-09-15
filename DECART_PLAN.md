@@ -12,6 +12,14 @@ L1–L6 are still to run: they need the owner's Decart key and OK.
 with audio first, so Miko now waits for a video track; and the first frame
 comes about 6–7 s after connecting, so the first frame now gets 30 s after
 connecting (unbilled) instead of sharing the 10 s connect limit.
+
+**Confirmed live on Mac (2026-09-15, two sessions):** connected in
+3.0–3.2 s; the output's audio track arrived at about 2.4 s and its video
+track at about 3.1 s; the result showed at 1280×720. The first-frame
+failures were only the audio-first handover, not slow generation. L1 is
+confirmed, and L2 for the full swap on `lucy-2.5`. Still to check: outfit
+on `lucy-vton-3.5`, L3 (billed seconds against Decart's dashboard), L4,
+L5, L6 and Windows.
 **No live Decart session without the owner's explicit OK** (same rule as
 fal: every session bills a real account).
 

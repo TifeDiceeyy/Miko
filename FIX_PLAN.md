@@ -24,20 +24,19 @@ edit. **Function names are authoritative, line numbers are hints.**
     approved, Stop mid-handshake three times left 0 sockets and 0 `fal.run`
     connections.
   - 33 tests pass. Typecheck, syntax checks and in-app checks pass.
-- **Release:** **v1.2.0 is the latest**, published 2026-09-15 with the
-  owner's OK: https://github.com/TifeDiceeyy/Miko/releases/tag/v1.2.0,
-  built from `e08c1d1`. It adds OBS output that connects and sends by
-  itself (the OBS page file), the 10 s connect limit with per-step timing,
-  and the Windows PowerShell cache. Checked:
+- **Release:** **v1.3.0 is the latest**, published 2026-09-15 with the
+  owner's OK: https://github.com/TifeDiceeyy/Miko/releases/tag/v1.3.0,
+  built from `f4d8830`. It adds Decart as a second key supplier (see
+  `DECART_PLAN.md`; confirmed live on Mac). Checked:
   - The Mac app inside the DMG and the zip is ad-hoc signed with the
-    camera permission, version 1.2.0, ID `com.tifediceeyy.miko`, with the
-    new code inside.
+    camera permission, version 1.3.0, ID `com.tifediceeyy.miko`, with the
+    Decart and OBS code inside.
   - The Windows installer is the one CI built on Windows from that commit,
-    where all 64 tests passed with none skipped, including the OBS page and
-    page file in Chrome and the real network check.
+    where all 85 tests passed with none skipped.
   - The uploaded files match `SHA256SUMS.txt`.
-  - v1.1.0 (`4fe4707`) is still published; removing it is the owner's
-    call.
+  - v1.2.0 (`e08c1d1`) is still published; removing it is the owner's
+    call. v1.1.0 (`4fe4707`) was removed with its tag on 2026-09-15 at
+    the owner's request (0 downloads).
   - v1.0.2 (`b490ff8`) was removed with its tag on 2026-09-14 at the
     owner's request. It had 0 downloads.
   - v1.0.1 (`2be3cc0`), which predates the socket guard, was removed with
