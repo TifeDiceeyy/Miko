@@ -1,7 +1,7 @@
 {
   "name": "miko",
   "productName": "Miko",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Miko — a secure Electron control surface for live realtime character swap.",
   "main": "main.js",
   "author": "Miko",
