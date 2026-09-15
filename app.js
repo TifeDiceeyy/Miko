@@ -8,6 +8,9 @@ const { MIN_BALANCE_USD } = billing;
 const billingMeter = new billing.BillingMeter({ storage: window.localStorage });
 const referencePolicy = window.MikoReferencePolicy;
 const presets = window.MikoSessionPresets;
+// Decart reports no balance; Miko keeps today's Decart spend itself.
+const dailySpend = new billing.DailySpend({ storage: window.localStorage });
+const DEFAULT_DECART_DAILY_LIMIT = 5;
 
 const STATE_LABELS = {
   idle: "Idle",
@@ -97,6 +100,10 @@ const elements = {
   balanceVisibilityIcon: $("#balanceVisibilityIcon"),
   openFalDashboard: $("#openFalDashboard"),
   topUpBalance: $("#topUpBalance"),
+  keySupplier: $("#keySupplier"),
+  keySupplierHint: $("#keySupplierHint"),
+  decartLimitRow: $("#decartLimitRow"),
+  decartDailyLimit: $("#decartDailyLimit"),
   openLogsFolder: $("#openLogsFolder"),
   activityLog: $("#activityLog"),
   activityCount: $("#activityCount"),
@@ -173,12 +180,51 @@ function selectedTask() {
   return elements.taskSelect.value;
 }
 
+function selectedSupplier() {
+  return presets.resolveSupplier(elements.keySupplier.value);
+}
+
+function isDecart() {
+  return selectedSupplier() === "decart";
+}
+
+// The model the selected supplier actually runs, and bills, for the chosen
+// Miko model: fal's own endpoint, or Decart's model name.
+function billingModel(model = selectedModel()) {
+  return presets.backendModel(model, selectedSupplier());
+}
+
+// Empty means the default; 0 means no daily limit.
+function dailyLimit() {
+  const raw = elements.decartDailyLimit.value;
+  if (raw === "") return DEFAULT_DECART_DAILY_LIMIT;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+// Whether the supplier's stop point is reached: fal's $1 balance floor, or
+// Decart's daily spending limit.
+function liveTimeExhausted() {
+  if (isDecart()) return dailyLimit() > 0 && dailySpend.remainingSeconds(dailyLimit(), billingModel()) <= 0;
+  return (billingMeter.remainingSeconds(billingModel()) ?? 0) <= 0;
+}
+
+// Seconds of live time left before that stop point, or null when unknown
+// (no fal balance reading yet, or no Decart daily limit).
+function remainingLiveSeconds() {
+  if (isDecart()) {
+    const seconds = dailySpend.remainingSeconds(dailyLimit(), billingModel());
+    return seconds === Infinity ? null : seconds;
+  }
+  return billingMeter.remainingSeconds(billingModel());
+}
+
 function modelName(model = selectedModel()) {
   return presets.MODEL_NAMES[model] || "Miko";
 }
 
 function formatRate(model = selectedModel()) {
-  return `$${billing.rateForEndpoint(model).toFixed(2)}/s`;
+  return `$${billing.rateForEndpoint(billingModel(model)).toFixed(2)}/s`;
 }
 
 function referenceRequirementText() {
@@ -187,9 +233,43 @@ function referenceRequirementText() {
     : "Choose a reference image before starting — Full character swap needs a photo of the person or character.";
 }
 
-function attachSession(mode) {
+let decartBundle = null;
+let attachTicket = 0;
+
+// The Decart bundle (about 1 MB) is loaded only when Decart is the key
+// supplier, so a fal session never loads or runs any of it.
+function ensureDecartBundle() {
+  if (window.MikoDecart) return Promise.resolve(window.MikoDecart);
+  if (!decartBundle) {
+    decartBundle = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "dist/decart-session.bundle.js";
+      script.onload = () => (window.MikoDecart ? resolve(window.MikoDecart) : reject(new Error("the module loaded but didn't start")));
+      script.onerror = () => reject(new Error("dist/decart-session.bundle.js couldn't be loaded"));
+      document.head.append(script);
+    }).catch((error) => {
+      decartBundle = null;
+      throw error;
+    });
+  }
+  return decartBundle;
+}
+
+// fal's session, or Decart's for the model Decart runs.
+async function sessionFor(model) {
+  if (!isDecart()) return getSession(model);
+  const decart = await ensureDecartBundle();
+  return decart.getSession(billingModel(model));
+}
+
+async function attachSession(mode) {
+  const ticket = ++attachTicket;
+  const next = await sessionFor(mode);
+  if (ticket !== attachTicket) return;
+  // Switching supplier: the other supplier's session must not keep running.
+  if (session && session !== next) session.hardStop();
   unsubscribeSession();
-  session = getSession(mode);
+  session = next;
   session.setConnectGuard(gateSessionStart);
   session.setPreferredResolution(Number(elements.resolutionSelect.value));
   session.setPreferredDeviceId(elements.cameraSelect.value || undefined);
@@ -197,6 +277,38 @@ function attachSession(mode) {
   unsubscribeSession = session.subscribe(render);
   render();
   void session.previewCamera();
+}
+
+// If Decart's session module won't load, fall back to fal with the reason.
+async function attachSessionSafely() {
+  try {
+    await attachSession(selectedModel());
+  } catch (error) {
+    if (!isDecart()) throw error;
+    const reason = error?.message || String(error);
+    toast("Couldn't load the session module for the selected key supplier. Switched back to the default supplier.");
+    addActivity(`Key supplier session module failed to load (${reason}); switched back to the default supplier`);
+    elements.keySupplier.value = "fal";
+    renderSupplierCopy();
+    updateSelectionCopy();
+    await attachSession(selectedModel());
+  }
+}
+
+// The API key dialog is the only place supplier names appear (DECART_PLAN.md, D1).
+function renderSupplierCopy() {
+  const decart = isDecart();
+  elements.decartLimitRow.hidden = !decart;
+  elements.keySupplierHint.textContent = decart
+    ? `Decart: Miko Pro ${formatRate(presets.MODELS.pro)}, Miko Lite ${formatRate(presets.MODELS.lite)}, billed per second of generation. Each session is capped at 10 minutes.`
+    : `fal.ai: Miko Pro ${formatRate(presets.MODELS.pro)}, Miko Lite ${formatRate(presets.MODELS.lite)}.`;
+  labelModelOptions();
+}
+
+function persistSettingsQuietly() {
+  bridge.saveSettings(collectSettings()).then((result) => {
+    if (result && !result.ok) addActivity(`Settings couldn't be saved: ${result.message}`);
+  }, (error) => addActivity(`Settings couldn't be saved: ${error?.message || error}`));
 }
 
 function streamDimensions(stream, videoEl) {
@@ -305,6 +417,7 @@ function render() {
   elements.taskSelect.disabled = isLive || isBusy;
   elements.resolutionSelect.disabled = isLive || isBusy;
   elements.cameraSelect.disabled = isLive || isBusy;
+  elements.keySupplier.disabled = isLive || isBusy;
   $("span", elements.startBtn).textContent = state.checkingNetwork ? "Checking network…" : isBusy ? "Connecting…" : isLive ? "Live" : "Start Live";
   if (isLive || isBusy) elements.networkWarning.hidden = true;
 
@@ -325,7 +438,7 @@ function render() {
   if (sessionActive && !state.lastSessionActive) {
     state.lastSessionActive = true;
     if (!state.sessionRecord) {
-      state.sessionRecord = { model: selectedModel(), seconds: 0 };
+      state.sessionRecord = { model: selectedModel(), backend: billingModel(), supplier: selectedSupplier(), seconds: 0 };
       state.pendingEndReason = null;
     }
     if (elements.obsToggle.checked) startObsFrameLoop();
@@ -472,7 +585,9 @@ function collectSettings() {
     enablePromptExpansion: elements.promptExpansion.checked,
     cameraId: elements.cameraSelect.value,
     theme: elements.html.dataset.theme,
-    obsEnabled: elements.obsToggle.checked
+    obsEnabled: elements.obsToggle.checked,
+    keySupplier: selectedSupplier(),
+    decartDailyLimit: elements.decartDailyLimit.value === "" ? undefined : Number(elements.decartDailyLimit.value)
   };
 }
 
@@ -492,6 +607,9 @@ function applySettings(settings) {
   // call (e.g. a later Save) would restart an already-running relay for
   // no reason.
   elements.obsToggle.checked = Boolean(settings.obsEnabled);
+  elements.keySupplier.value = presets.resolveSupplier(settings.keySupplier);
+  elements.decartDailyLimit.value = String(settings.decartDailyLimit ?? DEFAULT_DECART_DAILY_LIMIT);
+  renderSupplierCopy();
   syncTaskOptionsForModel();
   updateSelectionCopy();
 }
@@ -535,10 +653,16 @@ function updateSelectionCopy() {
 // The runway reveals roughly how much balance is left, so it follows the
 // balance eye-toggle like the balance itself.
 function renderModelRunway() {
-  const remaining = billingMeter.remainingSeconds(selectedModel());
+  const remaining = remainingLiveSeconds();
   elements.modelRunway.hidden = remaining == null || !state.balanceVisible;
   if (elements.modelRunway.hidden) return;
   elements.modelRunway.className = `field-hint ${remaining > 0 ? "" : "danger"}`.trim();
+  if (isDecart()) {
+    elements.modelRunway.textContent = remaining > 0
+      ? `~${formatLiveDuration(remaining * 1000)} of live time at ${formatRate()} before today's $${dailyLimit().toFixed(2)} limit.`
+      : `Today's $${dailyLimit().toFixed(2)} limit is reached — raise it in Model settings → API key to start.`;
+    return;
+  }
   elements.modelRunway.textContent = remaining > 0
     ? `~${formatLiveDuration(remaining * 1000)} of live time at ${formatRate()} before the $${MIN_BALANCE_USD.toFixed(2)} floor.`
     : `At the $${MIN_BALANCE_USD.toFixed(2)} floor — top up to start.`;
@@ -566,7 +690,7 @@ function applyTheme(theme, notify = true) {
 // ---------------------------------------------------------------------
 
 async function refreshKeyStatus() {
-  const { hasKey, keyError } = await bridge.getKeyStatus();
+  const { hasKey, keyError } = isDecart() ? await bridge.decartKeyStatus() : await bridge.getKeyStatus();
   // "No key configured yet" would be actively misleading if a key was
   // saved but can no longer be read/decrypted — distinguish that case so
   // the user re-enters their key instead of assuming nothing was ever set.
@@ -582,8 +706,30 @@ async function refreshKeyStatus() {
 // deadline while a session is running; server polling is only a cross-check.
 let lastBalanceWarningShown = false;
 
+// Decart doesn't report a balance, so the dialog shows today's spend with it
+// against the daily limit instead, and the sidebar balance is hidden. Amounts
+// follow the balance eye toggle.
+function renderDecartSpend() {
+  elements.balanceSummary.hidden = true;
+  elements.balanceText.hidden = false;
+  const limit = dailyLimit();
+  const spent = dailySpend.today();
+  const reached = limit > 0 && spent >= limit;
+  elements.balanceText.className = `field-hint ${reached ? "danger" : ""}`.trim();
+  const detail = state.balanceVisible
+    ? limit > 0
+      ? `Spent today: $${spent.toFixed(2)} of your $${limit.toFixed(2)} daily limit`
+      : `Spent today: $${spent.toFixed(2)} (no daily limit)`
+    : "Today's spend is hidden";
+  elements.balanceText.textContent = `Decart doesn't report a balance. ${detail}${reached ? " — new sessions are blocked until tomorrow or a higher limit" : ""}.`;
+}
+
 function renderBalance() {
   renderModelRunway();
+  if (isDecart()) {
+    renderDecartSpend();
+    return;
+  }
   const result = state.balance;
   const hasBalance = result && typeof result.balance === "number";
   elements.balanceSummary.hidden = !hasBalance;
@@ -617,6 +763,12 @@ function renderBalance() {
 }
 
 async function refreshBalance({ notifyIfLow = false } = {}) {
+  if (isDecart()) {
+    state.balanceBlocksStart = liveTimeExhausted();
+    renderBalance();
+    if (session) render();
+    return null;
+  }
   const result = await bridge.getBalance().catch((error) => {
     // Non-fatal by design (the app must still work if fal's billing
     // endpoint is unreachable or scoped out) — but silent-forever is its
@@ -656,11 +808,38 @@ async function refreshBalance({ notifyIfLow = false } = {}) {
   return result;
 }
 
+// Decart has no balance to check, so Start is gated on the daily limit and
+// on the account's live-session quota instead. Each session's token also
+// carries a 10-minute cap (lib/decart-api.js).
+async function gateDecartStart() {
+  if (liveTimeExhausted()) {
+    state.balanceBlocksStart = true;
+    renderBalance();
+    const amount = state.balanceVisible ? ` ($${dailyLimit().toFixed(2)})` : "";
+    throw new Error(`Today's spending limit${amount} is reached. Raise it in Model settings → API key, or wait until tomorrow.`);
+  }
+  const quota = await bridge.decartQuota().catch((error) => ({ ok: false, blocking: false, message: error?.message || String(error) }));
+  if (!quota.ok) {
+    if (quota.blocking) throw new Error(quota.message);
+    addActivity(`The live-session limit couldn't be checked: ${quota.message}`);
+  } else if (quota.remaining === 0) {
+    throw new Error(`This account already has its maximum number of live sessions running (${quota.limit}). End the other session, then press Start again.`);
+  }
+  state.balanceBlocksStart = false;
+  renderBalance();
+}
+
 async function gateSessionStart() {
   if (!state.referenceImageUrl) throw new Error(referenceRequirementText());
   session.updateEditParams(currentEditParams());
 
   stopBillingGuard();
+
+  if (isDecart()) {
+    await gateDecartStart();
+    startBillingGuard();
+    return;
+  }
 
   const result = await bridge.getBalance().catch((error) => {
     console.warn("[balance] preflight failed:", error?.message || error);
@@ -784,7 +963,7 @@ function startLiveTimer() {
   elements.liveTimer.textContent = "00:00";
   liveTimerInterval = window.setInterval(() => {
     const elapsed = formatLiveDuration(Date.now() - liveStartedAt);
-    const remaining = billingMeter.remainingSeconds(selectedModel());
+    const remaining = remainingLiveSeconds();
     // Time left reveals roughly the balance, so it follows the eye toggle.
     elements.liveTimer.textContent = remaining == null || !state.balanceVisible
       ? elapsed
@@ -826,13 +1005,27 @@ function stopForBalance(result) {
   balanceDisconnectInProgress = false;
 }
 
+function stopForDailyLimit() {
+  if (balanceDisconnectInProgress) return;
+  balanceDisconnectInProgress = true;
+  const amount = state.balanceVisible ? ` ($${dailyLimit().toFixed(2)})` : "";
+  state.pendingEndReason = `Auto-disconnected at today's spending limit${amount}`;
+  toast(`Disconnected — today's spending limit reached${amount}`);
+  stopBillingGuard();
+  clearTransientSessionMedia();
+  session.disconnect();
+  balanceDisconnectInProgress = false;
+}
+
 function recordBillingTick(now = Date.now()) {
   const snap = session?.getSnapshot();
   if (lastBillingTickAt != null && ["connecting", "live"].includes(snap?.state)) {
     const seconds = (now - lastBillingTickAt) / 1000;
-    billingMeter.recordSpend(seconds, selectedModel());
+    // Decart spend goes to the daily total, never into fal's balance meter.
+    if (state.sessionRecord?.supplier === "decart") dailySpend.add(seconds * billing.rateForEndpoint(state.sessionRecord.backend));
+    else billingMeter.recordSpend(seconds, selectedModel());
     if (state.sessionRecord) state.sessionRecord.seconds += seconds;
-    state.balanceBlocksStart = (billingMeter.remainingSeconds(selectedModel()) ?? 0) <= 0;
+    state.balanceBlocksStart = liveTimeExhausted();
     renderBalance();
   }
   lastBillingTickAt = now;
@@ -843,10 +1036,14 @@ function startBillingGuard() {
     lastBillingTickAt = Date.now();
     localBillingTimer = window.setInterval(() => {
       recordBillingTick();
-      if (state.balanceBlocksStart) stopForBalance(null);
+      if (state.balanceBlocksStart) {
+        if (isDecart()) stopForDailyLimit();
+        else stopForBalance(null);
+      }
     }, 500);
   }
-  if (liveBalancePollTimer) return;
+  // Balance polling is fal's; Decart reports no balance.
+  if (liveBalancePollTimer || isDecart()) return;
   liveBalancePollTimer = window.setInterval(async () => {
     const result = await bridge.getBalance().catch(() => null);
     if (!result || typeof result.balance !== "number") return;
@@ -928,7 +1125,7 @@ function finishSessionIfInactive() {
   state.pendingEndReason = null;
   const seconds = record?.seconds || 0;
   const summary = seconds >= 1
-    ? `Session ended — ${modelName(record.model)}, ${formatLiveDuration(seconds * 1000)}, est. $${(seconds * billing.rateForEndpoint(record.model)).toFixed(2)} · ${reason}`
+    ? `Session ended — ${modelName(record.model)}, ${formatLiveDuration(seconds * 1000)}, est. $${(seconds * billing.rateForEndpoint(record.backend || record.model)).toFixed(2)} · ${reason}`
     : reason;
   elements.activityLog.replaceChildren();
   state.activityCount = 0;
@@ -994,7 +1191,7 @@ async function passesConnectionCheck() {
   render();
   let check = null;
   try {
-    check = await bridge.checkConnection();
+    check = await bridge.checkConnection(selectedSupplier());
   } catch (error) {
     console.warn("[network] check failed:", error?.message || error);
   } finally {
@@ -1080,9 +1277,9 @@ function bindEvents() {
     clearTransientSessionMedia();
     syncTaskOptionsForModel();
     updateSelectionCopy();
-    attachSession(selectedModel());
-    if (billingMeter.effectiveBalance() != null) {
-      state.balanceBlocksStart = (billingMeter.remainingSeconds(selectedModel()) ?? 0) <= 0;
+    void attachSessionSafely();
+    if (isDecart() || billingMeter.effectiveBalance() != null) {
+      state.balanceBlocksStart = liveTimeExhausted();
       renderBalance();
       render();
     }
@@ -1122,7 +1319,7 @@ function bindEvents() {
     if (!key) { event.preventDefault(); toast("Enter a key first"); return; }
     event.preventDefault();
     try {
-      await bridge.saveKey(key);
+      await (isDecart() ? bridge.decartSaveKey(key) : bridge.saveKey(key));
       elements.apiKeyInput.value = "";
       addActivity("API key saved");
       toast("API key saved");
@@ -1134,8 +1331,27 @@ function bindEvents() {
       addActivity(`API key save failed: ${message}`);
     }
   });
-  elements.openFalDashboard.addEventListener("click", () => bridge.openExternal("https://fal.ai/dashboard/keys"));
-  elements.topUpBalance.addEventListener("click", () => bridge.openExternal("https://fal.ai/dashboard/billing"));
+  elements.openFalDashboard.addEventListener("click", () => bridge.openExternal(isDecart() ? "https://platform.decart.ai/" : "https://fal.ai/dashboard/keys"));
+  elements.topUpBalance.addEventListener("click", () => bridge.openExternal(isDecart() ? "https://platform.decart.ai/" : "https://fal.ai/dashboard/billing"));
+  elements.keySupplier.addEventListener("change", async () => {
+    // Switching supplier ends the current session; nothing carries over.
+    stopBillingGuard();
+    clearTransientSessionMedia();
+    renderSupplierCopy();
+    updateSelectionCopy();
+    await attachSessionSafely();
+    await refreshKeyStatus();
+    await refreshBalance();
+    render();
+    persistSettingsQuietly();
+    addActivity("Key supplier changed");
+  });
+  elements.decartDailyLimit.addEventListener("change", () => {
+    state.balanceBlocksStart = liveTimeExhausted();
+    renderBalance();
+    render();
+    persistSettingsQuietly();
+  });
   elements.openLogsFolder.addEventListener("click", () => bridge.openLogsFolder());
 
   elements.obsToggle.addEventListener("change", async () => {
@@ -1167,6 +1383,13 @@ function bindEvents() {
   });
   elements.sourceVideo.addEventListener("resize", render);
   elements.resultVideo.addEventListener("resize", render);
+  // One line per session saying the result actually reached the screen, so
+  // the log answers "was there output?" for either key supplier.
+  elements.resultVideo.addEventListener("loadeddata", () => {
+    if (!state.sessionRecord || state.sessionRecord.firstFrameLogged) return;
+    state.sessionRecord.firstFrameLogged = true;
+    addActivity(`Result video showing (${elements.resultVideo.videoWidth} × ${elements.resultVideo.videoHeight})`);
+  });
 
   $$("[data-window-action]").forEach((button) => button.addEventListener("click", () => bridge.windowControl(button.dataset.windowAction)));
   navigator.mediaDevices?.addEventListener?.("devicechange", () => refreshCameras());
@@ -1207,7 +1430,7 @@ async function init() {
   // HTTP server.
   if (elements.obsToggle.checked) void toggleObsOutput();
 
-  attachSession(selectedModel());
+  await attachSessionSafely();
   await refreshKeyStatus();
   void refreshBalance({ notifyIfLow: true });
 

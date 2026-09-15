@@ -12,7 +12,7 @@
     "start": "npm run build && electron .",
     "dev": "npm run build && electron . --dev",
     "typecheck": "tsc --noEmit",
-    "check": "node --check main.js && node --check preload.js && node --check app.js && node --check lib/billing-policy.js && node --check lib/reference-policy.js && node --check lib/session-presets.js && node --check lib/network-check.js && node --check lib/obs-relay.js",
+    "check": "node --check main.js && node --check preload.js && node --check app.js && node --check lib/billing-policy.js && node --check lib/reference-policy.js && node --check lib/session-presets.js && node --check lib/network-check.js && node --check lib/obs-relay.js && node --check lib/decart-api.js",
     "test": "node --test test/*.test.js",
     "pack": "electron-builder --dir",
     "dist": "npm run build && electron-builder",
@@ -20,6 +20,7 @@
     "dist:win": "npm run build && electron-builder --win nsis --x64"
   },
   "dependencies": {
+    "@decartai/sdk": "0.2.0",
     "@fal-ai/client": "1.10.1"
   },
   "devDependencies": {
@@ -46,6 +47,7 @@
       "lib/session-presets.js",
       "lib/network-check.js",
       "lib/obs-relay.js",
+      "lib/decart-api.js",
       "dist/**/*",
       "README.md",
       "PRODUCT.md"

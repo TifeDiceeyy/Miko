@@ -7,7 +7,7 @@ declare global {
       logEvent(level: "info" | "warn" | "error", message: string): void;
       onSystemSuspend(callback: (reason: string) => void): () => void;
       getCameraAccess(): Promise<string>;
-      checkConnection(): Promise<{
+      checkConnection(supplier?: "fal" | "decart"): Promise<{
         reachable: boolean;
         blockers: { kind: string; message: string }[];
         warnings: { kind: string; message: string; label?: string | null }[];
@@ -25,6 +25,13 @@ declare global {
       saveKey(key: string): Promise<{ hasKey: boolean }>;
       getToken(app: string): Promise<string>;
       deleteRequestPayload(requestId: string): Promise<{ ok: boolean }>;
+      decartKeyStatus(): Promise<{ hasKey: boolean; keyError?: string }>;
+      decartSaveKey(key: string): Promise<{ hasKey: boolean }>;
+      decartToken(model: string): Promise<string>;
+      decartQuota(): Promise<
+        | { ok: true; limit: number | null; active: number | null; remaining: number | null }
+        | { ok: false; blocking: boolean; message: string }
+      >;
       openExternal(url: string): Promise<void>;
       obsStart(): Promise<{ url: string; port: number; preferredPort: number; file: string }>;
       obsStop(): Promise<void>;

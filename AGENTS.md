@@ -426,6 +426,43 @@ fal.ai's public docs pages.
       `http://127.0.0.1:5590/?token=…`. Also check the source's width and
       height: OBS's default Browser Source is 800×600, which downscales.
 
+12. **Decart direct is a second key supplier (2026-09-15), fully separate
+    from fal.** Plan and sources: `DECART_PLAN.md`.
+    - `lib/decart-realtime-session.ts` (`DecartRealtimeSession`) has the
+      same surface app.js uses on the fal session. It's bundled on its own
+      (`lib/decart-entry.ts` → `dist/decart-session.bundle.js`, about 1 MB
+      with `@decartai/sdk` 0.2.0 and `livekit-client`) and loaded by app.js
+      only when Decart is the supplier. The fal bundle must stay
+      byte-identical: compare its hash before and after touching anything
+      shared.
+    - Keys: `decart-key.store` (safeStorage), never in the renderer. The
+      renderer gets a client token from `decart:get-token`
+      (`lib/decart-api.js`): 60 s, `allowedModels: [model]`,
+      `constraints.realtime.maxSessionDuration: 600`. REST uses
+      `x-api-key`; the realtime WebSocket carries the token as `api_key`.
+    - Models: Miko Pro → `lucy-2.5`, Miko Lite → `lucy-vton-3.5`, both
+      1280×720 at 30 fps, $0.02/s. Never the `-latest` aliases
+      (`lucy-latest` is 1088×624).
+    - The SDK retries and reconnects by itself, and that can't be turned
+      off. The session stops at the first `reconnecting` or `error`;
+      disposing the SDK session ends its retries. Two limits: 10 s from the
+      token request to "connected", then 30 s for the first frame. The
+      service prepares the model after connecting (about 6–7 s seen), and
+      Decart bills only active generation, so that second wait is free. The
+      SDK calls `onRemoteStream` again for every output track, audio first
+      in practice: Miko shows only the newest video track, video-only. `telemetry: false` is passed. The SDK's
+      frame-timing worker can't be created in an IIFE bundle, so the SDK
+      turns frame timing off.
+    - No balance API: Start is gated on a daily spend limit (setting
+      `decartDailyLimit`, default $5, `DailySpend` in billing-policy.js)
+      and `GET /v1/realtime/quota`. Decart spend never touches fal's
+      `BillingMeter`.
+    - The CSP adds `api.decart.ai`, `api3.decart.ai`, `lk.decart.ai` and
+      `*.lkc.decart.ai`. The network check probes `api3.decart.ai` for
+      Decart.
+    - Not yet run against the live service (needs the owner's Decart key
+      and OK): `DECART_PLAN.md` L1–L6.
+
 ## Explicitly rejected features — don't re-propose these
 
 - **No auto-killing other processes** (VPNs, security software) to force

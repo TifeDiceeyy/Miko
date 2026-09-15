@@ -61,6 +61,14 @@ async function writeObsPageFile() {
   }
 }
 
+const DEFAULT_DECART_DAILY_LIMIT = 5;
+
+function sanitizeDailyLimit(value) {
+  if (value === undefined || value === null || value === "") return DEFAULT_DECART_DAILY_LIMIT;
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.min(1000, Math.max(0, Math.round(number * 100) / 100)) : DEFAULT_DECART_DAILY_LIMIT;
+}
+
 function sanitizeSettings(value) {
   const source = value && typeof value === "object" ? value : {};
   return {
@@ -82,7 +90,13 @@ function sanitizeSettings(value) {
     // On by default, so the output goes to OBS without setup: the relay
     // starts at launch (app.js's init()) and frames flow whenever a session
     // is live. Only an explicit saved `false` turns it off.
-    obsEnabled: source.obsEnabled === undefined ? true : Boolean(source.obsEnabled)
+    obsEnabled: source.obsEnabled === undefined ? true : Boolean(source.obsEnabled),
+    // Which key supplier sessions use. Missing means fal, so installs from
+    // before Decart support behave exactly as before.
+    keySupplier: presets.resolveSupplier(source.keySupplier),
+    // Decart reports no balance, so Miko stops Decart sessions once today's
+    // spend reaches this many dollars (0 = no limit).
+    decartDailyLimit: sanitizeDailyLimit(source.decartDailyLimit)
   };
 }
 
@@ -98,7 +112,10 @@ let logQueue = Promise.resolve();
 function redactLogText(value) {
   return String(value || "")
     .replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=_-]+/gi, "[image omitted]")
-    .replace(/\bKey\s+[A-Za-z0-9_.:-]+/gi, "Key [redacted]")
+    // An "Authorization: Key <secret>" value. Case-sensitive and long, so
+    // ordinary text like "API key was rejected" isn't mangled.
+    .replace(/\bKey\s+[A-Za-z0-9_.:-]{20,}/g, "Key [redacted]")
+    .replace(/\bek_[A-Za-z0-9_-]{8,}/g, "ek_[redacted]")
     .replace(/[0-9a-f-]{36}:[0-9a-f]{32}/gi, "[key redacted]")
     .replace(/fal_jwt_token=[^&\s]+/gi, "fal_jwt_token=[redacted]")
     .slice(0, 1200);
@@ -577,12 +594,109 @@ ipcMain.handle("fal:delete-request-payload", async (event, requestId) => {
   return { ok: true };
 });
 
+// ---------------------------------------------------------------------
+// Decart — the second key supplier (see lib/decart-api.js). Its key is kept
+// the same way as fal's, in its own file, and never reaches the renderer:
+// the renderer gets a 60-second client token for one model instead.
+// ---------------------------------------------------------------------
+const decartApi = require("./lib/decart-api");
+
+function decartKeyPath() {
+  return path.join(app.getPath("userData"), "decart-key.store");
+}
+
+async function saveDecartKey(key) {
+  const filePath = decartKeyPath();
+  await mkdir(path.dirname(filePath), { recursive: true });
+  if (safeStorage.isEncryptionAvailable()) {
+    await writeFile(filePath, safeStorage.encryptString(key));
+  } else {
+    console.warn(`[decart-key] OS encryption unavailable — storing the key in plain text at ${filePath}`);
+    await writeFile(filePath, key, "utf8");
+  }
+}
+
+async function loadDecartKey() {
+  if (process.env.DECART_API_KEY) return process.env.DECART_API_KEY;
+  let raw;
+  try {
+    raw = await readFile(decartKeyPath());
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.error("Unable to read stored Decart key file", error);
+      throw new Error(`Could not read the saved API key from disk (${error.code || error.message}). Re-enter it in Model settings → API key.`);
+    }
+    return undefined;
+  }
+  if (safeStorage.isEncryptionAvailable()) {
+    try {
+      return safeStorage.decryptString(raw);
+    } catch (error) {
+      console.error("Unable to decrypt stored Decart key", error);
+      throw new Error("The saved API key could not be decrypted (OS keychain data changed or unavailable). Re-enter it in Model settings → API key.");
+    }
+  }
+  return raw.toString("utf8");
+}
+
+ipcMain.handle("decart:get-key-status", async (event) => {
+  if (!isTrustedSender(event)) return { hasKey: false };
+  try {
+    return { hasKey: Boolean(await loadDecartKey()) };
+  } catch (error) {
+    console.error("decart:get-key-status:", error.message);
+    return { hasKey: false, keyError: error.message };
+  }
+});
+
+ipcMain.handle("decart:save-key", async (event, key) => {
+  if (!isTrustedSender(event)) throw new Error("Untrusted request.");
+  try {
+    await saveDecartKey(String(key || "").trim());
+  } catch (error) {
+    console.error("Unable to save Decart key", error);
+    throw new Error(`Could not save the API key to disk (${error.code || error.message}).`);
+  }
+  return { hasKey: Boolean(await loadDecartKey()) };
+});
+
+ipcMain.handle("decart:get-token", async (event, requestedModel) => {
+  if (!isTrustedSender(event)) throw new Error("Untrusted request.");
+  const apiKey = await loadDecartKey();
+  if (!apiKey) throw new Error("No API key configured. Add one in Model settings → API key.");
+  try {
+    // Only the models Miko maps to are ever allowed, whatever is requested,
+    // and every token carries the 10-minute session cap (decart-api.js).
+    const { token } = await decartApi.createClientToken({ apiKey, model: String(requestedModel || "") });
+    return token;
+  } catch (error) {
+    logAppEvent("error", `Realtime token request failed: ${error.message}`);
+    throw error;
+  }
+});
+
+ipcMain.handle("decart:get-quota", async (event) => {
+  if (!isTrustedSender(event)) throw new Error("Untrusted request.");
+  const apiKey = await loadDecartKey();
+  if (!apiKey) return { ok: false, blocking: true, message: "No API key configured. Add one in Model settings → API key." };
+  try {
+    return { ok: true, ...(await decartApi.getRealtimeQuota({ apiKey })) };
+  } catch (error) {
+    // A refused key or an empty account blocks Start. Anything else (a
+    // network or server error) is left to the token request, which reports
+    // it precisely too.
+    return { ok: false, blocking: [401, 402, 403].includes(error.status), message: error.message };
+  }
+});
+
 const networkCheck = require("./lib/network-check");
 
-ipcMain.handle("net:check", async (event) => {
+ipcMain.handle("net:check", async (event, supplier) => {
   if (!isTrustedSender(event)) throw new Error("Untrusted request.");
   const result = await networkCheck.checkNetwork({
-    resolveProxy: (url) => session.defaultSession.resolveProxy(url)
+    resolveProxy: (url) => session.defaultSession.resolveProxy(url),
+    // The host the chosen supplier's session will use.
+    host: supplier === "decart" ? "api3.decart.ai" : undefined
   });
   const issues = [...result.blockers, ...result.warnings].map((issue) => issue.kind);
   const latency = result.typicalConnectMs != null ? `, ${Math.round(result.typicalConnectMs)} ms to the service` : "";

@@ -38,10 +38,18 @@ https://github.com/TifeDiceeyy/Miko/releases/latest
 
 ### First run (both)
 
-1. Open **Model settings → API key**, paste your fal.ai key (create one at
-   https://fal.ai/dashboard/keys) and press **Save key**. Miko then shows your
-   balance. The key is stored encrypted on this computer only. After
-   upgrading from a version older than 1.1.0 you need to enter it once
+1. Open **Model settings → API key** and choose the **key supplier**:
+   - **fal.ai** (create a key at https://fal.ai/dashboard/keys): Miko Pro
+     $0.04/s, Miko Lite $0.02/s. Miko shows your balance and won't start a
+     session below $1.
+   - **Decart** (create a key at https://platform.decart.ai): Miko Pro
+     $0.02/s, Miko Lite $0.02/s, billed per second of generation. Decart
+     doesn't report a balance, so Miko caps each session at 10 minutes and
+     stops at a daily spending limit you set ($5 by default, 0 for none).
+
+   Paste the key and press **Save key**. Each supplier's key is stored
+   encrypted on this computer only, and you can keep both. After upgrading
+   from a version older than 1.1.0 you need to enter the fal.ai key once
    more.
 2. Choose a reference image, then press **Start Live**. Before each Start,
    Miko checks your network for a VPN, a proxy or a blocked connection and
@@ -112,6 +120,11 @@ local per-second spend timer, and uses balance polling only as a
 cross-check. There is no automatic reconnect: a failed connect attempt
 hard-stops completely rather than retrying, since a failed attempt has
 already spent real billed money.
+
+With a Decart key, Miko Pro runs Decart's `lucy-2.5` and Miko Lite runs
+`lucy-vton-3.5`, both at $0.02/second, straight from Decart instead of
+through fal. The Decart connection is a separate module that's only loaded
+when Decart is the supplier; see `DECART_PLAN.md`.
 
 Before each Start, Miko runs a quick connection check on the user's own
 machine:

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: file:; media-src 'self' blob:; connect-src 'self' file: wss://fal.run; object-src 'none'; base-uri 'none'; frame-ancestors 'none'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: file:; media-src 'self' blob:; connect-src 'self' file: wss://fal.run https://api.decart.ai wss://api3.decart.ai https://lk.decart.ai wss://lk.decart.ai https://*.lkc.decart.ai wss://*.lkc.decart.ai; object-src 'none'; base-uri 'none'; frame-ancestors 'none'" />
   <title>Miko</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -230,10 +230,21 @@
     <form method="dialog">
       <header><div><h2 id="advancedHeading">API key</h2><p>Stored locally on this device only.</p></div><button value="cancel" class="icon-btn" aria-label="Close"><svg><use href="#i-close" /></svg></button></header>
       <div class="dialog-body">
+        <label for="keySupplier">Key supplier</label>
+        <select id="keySupplier">
+          <option value="fal">fal.ai</option>
+          <option value="decart">Decart</option>
+        </select>
+        <p id="keySupplierHint" class="field-hint"></p>
         <label for="apiKeyInput">API key</label>
         <input id="apiKeyInput" type="password" placeholder="Paste your key" spellcheck="false" autocomplete="off" />
         <p class="field-hint">Don't have one yet? <button id="openFalDashboard" class="link-button" type="button">Get a key <svg><use href="#i-external" /></svg></button></p>
         <p class="field-hint"><button id="topUpBalance" class="link-button" type="button">Top up balance <svg><use href="#i-external" /></svg></button></p>
+        <div id="decartLimitRow" hidden>
+          <label for="decartDailyLimit">Daily spending limit (USD)</label>
+          <input id="decartDailyLimit" type="number" min="0" max="1000" step="1" inputmode="decimal" />
+          <p class="field-hint">Decart doesn't report a balance, so Miko blocks new sessions, and stops a running one, once today's spend reaches this. 0 turns the limit off. Each session is also capped at 10 minutes.</p>
+        </div>
         <p id="keyStatusText" class="field-hint">Checking…</p>
         <p id="balanceText" class="field-hint" hidden></p>
         <button id="openLogsFolder" class="advanced-button" type="button">Open diagnostic logs</button>
