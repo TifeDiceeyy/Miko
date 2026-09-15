@@ -24,18 +24,22 @@ edit. **Function names are authoritative, line numbers are hints.**
     approved, Stop mid-handshake three times left 0 sockets and 0 `fal.run`
     connections.
   - 33 tests pass. Typecheck, syntax checks and in-app checks pass.
-- **Release:** **v1.1.0 is the latest**, published 2026-09-14 with the
-  owner's OK: https://github.com/TifeDiceeyy/Miko/releases/tag/v1.1.0,
-  built from `4fe4707`. It adds the pre-connect network check. Checked:
+- **Release:** **v1.2.0 is the latest**, published 2026-09-15 with the
+  owner's OK: https://github.com/TifeDiceeyy/Miko/releases/tag/v1.2.0,
+  built from `e08c1d1`. It adds OBS output that connects and sends by
+  itself (the OBS page file), the 10 s connect limit with per-step timing,
+  and the Windows PowerShell cache. Checked:
   - The Mac app inside the DMG and the zip is ad-hoc signed with the
-    camera permission, version 1.1.0, ID `com.tifediceeyy.miko`.
-  - The Windows app packed into the installer has the new check.
-  - CI passed on that commit, including the real check on a Windows
-    runner.
+    camera permission, version 1.2.0, ID `com.tifediceeyy.miko`, with the
+    new code inside.
+  - The Windows installer is the one CI built on Windows from that commit,
+    where all 64 tests passed with none skipped, including the OBS page and
+    page file in Chrome and the real network check.
   - The uploaded files match `SHA256SUMS.txt`.
+  - v1.1.0 (`4fe4707`) is still published; removing it is the owner's
+    call.
   - v1.0.2 (`b490ff8`) was removed with its tag on 2026-09-14 at the
-    owner's request. It had 0 downloads. v1.1.0 is now the only published
-    release.
+    owner's request. It had 0 downloads.
   - v1.0.1 (`2be3cc0`), which predates the socket guard, was removed with
     its tag on 2026-09-14 at the owner's request. It had 0 downloads.
   - Codex deleted v1.0.0, which had the phantom-billing bug, on 2026-09-14.
